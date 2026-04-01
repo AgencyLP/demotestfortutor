@@ -26,13 +26,6 @@ function normalizeLine(line) {
   return cleanText(line).toLowerCase();
 }
 
-function splitIntoLines(text) {
-  return String(text || "")
-    .split(/\n+/)
-    .map((line) => cleanText(line))
-    .filter(Boolean);
-}
-
 function looksLikePageMarker(line) {
   const text = normalizeLine(line);
   return (
@@ -60,12 +53,7 @@ function looksLikeShortHeading(line) {
   const text = cleanText(line);
   const words = wordCount(text);
 
-  return (
-    words > 0 &&
-    words <= 8 &&
-    text.length <= 80 &&
-    !/[.!?]$/.test(text)
-  );
+  return words > 0 && words <= 8 && text.length <= 80 && !/[.!?]$/.test(text);
 }
 
 function looksLikeNumberedSectionHeading(line) {
@@ -100,6 +88,20 @@ function isLikelyCoverTitleSlide(lines) {
   return contentLines.length <= 4 && words <= 20 && !hasBodyLikeContent(contentLines);
 }
 
+function isTwoLineSplitHeading(lines) {
+  if (lines.length !== 2) return false;
+
+  const first = cleanText(lines[0]);
+  const second = cleanText(lines[1]);
+  const joined = cleanText(`${first} ${second}`);
+
+  const bothShort = looksLikeShortHeading(first) && looksLikeShortHeading(second);
+  const totalShort = wordCount(joined) <= 8;
+  const noBody = !hasBodyLikeContent(lines);
+
+  return bothShort && totalShort && noBody;
+}
+
 function isLikelyDividerSlide(lines) {
   const contentLines = lines.filter(
     (line) => !looksLikePageMarker(line) && !looksLikeBrandingLine(line)
@@ -110,6 +112,10 @@ function isLikelyDividerSlide(lines) {
 
   const joined = cleanText(contentLines.join(" "));
   const words = wordCount(joined);
+
+  if (isTwoLineSplitHeading(contentLines)) {
+    return true;
+  }
 
   if (contentLines.length <= 2 && words <= 10) return true;
 
