@@ -3,8 +3,8 @@ const pdfParse = require("pdf-parse");
 function cleanText(text) {
   return String(text || "")
     .replace(/\r/g, "\n")
-    .replace(/[ \t]+/g, " ")
     .replace(/\u00A0/g, " ")
+    .replace(/[ \t]+/g, " ")
     .replace(/[•▪◦●]/g, "•")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
@@ -26,6 +26,13 @@ function normalizeLine(line) {
   return cleanText(line).toLowerCase();
 }
 
+function splitIntoLines(text) {
+  return String(text || "")
+    .split(/\n+/)
+    .map((line) => cleanText(line))
+    .filter(Boolean);
+}
+
 function looksLikePageMarker(line) {
   const text = normalizeLine(line);
   return (
@@ -33,7 +40,18 @@ function looksLikePageMarker(line) {
     /page\s+\d+\s+of\s+\d+/.test(text) ||
     /^page\s+\d+$/.test(text) ||
     /^slide\s+\d+$/.test(text) ||
-    /^\d+\s*\/\s*\d+$/.test(text)
+    /^\d+\s*\/\s*\d+$/.test(text) ||
+    /^\d+$/.test(text)
+  );
+}
+
+function looksLikeBrandingLine(line) {
+  const text = normalizeLine(line);
+  return (
+    text.includes("international ll.b. program") ||
+    text.includes("business law") ||
+    text.includes("faculty of law") ||
+    text.includes("thammasat university")
   );
 }
 
@@ -45,114 +63,38 @@ function isLikelyCoverTitleSlide(lines) {
 
   const hasBodySentence =
     /[.!?]/.test(joined) ||
-    /\b(unlike|because|however|therefore|during|between|against|without|could|were|was|had|have)\b/i.test(joined);
+    /\b(unlike|because|however|therefore|during|between|against|without|could|were|was|had|have|means|includes)\b/i.test(joined);
 
   return lines.length <= 4 && words <= 20 && !hasBodySentence;
 }
 
-function splitIntoLines(text) {
-  return String(text || "")
-    .split(/\n+/)
-    .map((line) => cleanText(line))
-    .filter(Boolean);
-}
+function isLikelyDividerSlide(lines) {
+  if (!lines.length) return false;
 
-function findRepeatedRemovableLines(pages) {
-  const counts = new Map();
-  const totalPages = pages.length;
-  const threshold = Math.max(2, Math.ceil(totalPages * 0.9));
+  const nonFurniture = lines.filter(
+    (line) => !looksLikePageMarker(line) && !looksLikeBrandingLine(line)
+  );
 
-  for (const page of pages) {
-    const uniqueLines = new Set(page.lines.map(normalizeLine));
-    for (const line of uniqueLines) {
-      if (!line) continue;
-      counts.set(line, (counts.get(line) || 0) + 1);
-    }
-  }
+  if (nonFurniture.length === 0) return true;
 
-  const removable = new Set();
+  const joined = cleanText(nonFurniture.join(" "));
+  const words = wordCount(joined);
 
-  for (const [line, count] of counts.entries()) {
-    if (count >= threshold && looksLikePageMarker(line)) {
-      removable.add(line);
-    }
-  }
+  const hasBodySentence =
+    /[.!?]/.test(joined) ||
+    /\b(unlike|because|however|therefore|during|between|against|without|could|were|was|had|have|means|includes)\b/i.test(joined);
 
-  return removable;
-}
+  const numberedHeadingOnly =
+    nonFurniture.length <= 2 &&
+    words <= 8 &&
+    /^\d+\s*[\.\)]/.test(nonFurniture[0]);
 
-function removeSlideFurniture(lines, repeatedRemovableLines) {
-  return lines.filter((line) => {
-    const normalized = normalizeLine(line);
-    if (!normalized) return false;
-    if (repeatedRemovableLines.has(normalized)) return false;
-    if (looksLikePageMarker(normalized)) return false;
-    return true;
-  });
-}
+  const shortHeadingOnly =
+    nonFurniture.length <= 2 &&
+    words <= 10 &&
+    !hasBodySentence;
 
-function splitTitleAndBody(lines) {
-  if (lines.length === 0) {
-    return { title: "", text: "" };
-  }
-
-  if (lines.length === 1) {
-    return { title: lines[0], text: "" };
-  }
-
-  const first = cleanText(lines[0]);
-  const rest = cleanText(lines.slice(1).join(" "));
-  const firstWords = wordCount(first);
-
-  const looksLikeHeading =
-    firstWords <= 12 &&
-    !/[.!?]$/.test(first) &&
-    first.length <= 120;
-
-  if (looksLikeHeading) {
-    return {
-      title: first,
-      text: rest
-    };
-  }
-
-  return {
-    title: "",
-    text: cleanText(lines.join(" "))
-  };
-}
-
-function buildSegments(pages) {
-  const repeatedRemovableLines = findRepeatedRemovableLines(pages);
-  const segments = [];
-  let segmentId = 1;
-  let position = 1;
-
-  for (const page of pages) {
-    let lines = removeSlideFurniture(page.lines, repeatedRemovableLines);
-    if (lines.length === 0) continue;
-
-    if (page.pageNumber === 1 && isLikelyCoverTitleSlide(lines)) {
-      continue;
-    }
-
-    const { title, text } = splitTitleAndBody(lines);
-
-    if (!title && !text) continue;
-
-    segments.push({
-      segmentId,
-      position,
-      source: page.pageNumber,
-      title,
-      text
-    });
-
-    segmentId += 1;
-    position += 1;
-  }
-
-  return segments;
+  return numberedHeadingOnly || shortHeadingOnly;
 }
 
 function groupItemsIntoLines(items) {
@@ -185,6 +127,120 @@ function groupItemsIntoLines(items) {
   });
 
   return lines.filter(Boolean);
+}
+
+function findRepeatedRemovableLines(pages) {
+  const counts = new Map();
+  const totalPages = pages.length;
+  const threshold = Math.max(2, Math.ceil(totalPages * 0.8));
+
+  for (const page of pages) {
+    const uniqueLines = new Set(page.lines.map(normalizeLine));
+
+    for (const line of uniqueLines) {
+      if (!line) continue;
+      counts.set(line, (counts.get(line) || 0) + 1);
+    }
+  }
+
+  const removable = new Set();
+
+  for (const [line, count] of counts.entries()) {
+    if (count >= threshold && (looksLikePageMarker(line) || looksLikeBrandingLine(line))) {
+      removable.add(line);
+    }
+  }
+
+  return removable;
+}
+
+function removeSlideFurniture(lines, repeatedRemovableLines) {
+  return lines.filter((line, index, arr) => {
+    const normalized = normalizeLine(line);
+    if (!normalized) return false;
+
+    if (repeatedRemovableLines.has(normalized)) return false;
+
+    // Remove lone page numbers especially at top/bottom
+    if (/^\d+$/.test(normalized)) {
+      const nearTop = index <= 1;
+      const nearBottom = index >= arr.length - 2;
+      if (nearTop || nearBottom) return false;
+    }
+
+    if (looksLikePageMarker(normalized)) return false;
+
+    return true;
+  });
+}
+
+function splitTitleAndBody(lines) {
+  if (lines.length === 0) {
+    return { title: "", text: "" };
+  }
+
+  if (lines.length === 1) {
+    return { title: lines[0], text: "" };
+  }
+
+  const first = cleanText(lines[0]);
+  const restLines = lines.slice(1);
+  const rest = cleanText(restLines.join(" "));
+  const firstWords = wordCount(first);
+
+  const looksLikeHeading =
+    firstWords <= 12 &&
+    first.length <= 120 &&
+    !/[.!?]$/.test(first);
+
+  if (looksLikeHeading) {
+    return {
+      title: first,
+      text: rest
+    };
+  }
+
+  return {
+    title: "",
+    text: cleanText(lines.join(" "))
+  };
+}
+
+function buildSegments(pages) {
+  const repeatedRemovableLines = findRepeatedRemovableLines(pages);
+  const segments = [];
+  let segmentId = 1;
+  let position = 1;
+
+  for (const page of pages) {
+    let lines = removeSlideFurniture(page.lines, repeatedRemovableLines);
+    if (lines.length === 0) continue;
+
+    if (page.pageNumber === 1 && isLikelyCoverTitleSlide(lines)) {
+      continue;
+    }
+
+    if (isLikelyDividerSlide(lines)) {
+      continue;
+    }
+
+    const { title, text } = splitTitleAndBody(lines);
+
+    if (!title && !text) continue;
+
+    segments.push({
+      segmentId,
+      position,
+      source: page.pageNumber,
+      title,
+      text
+    });
+
+    segmentId += 1;
+    position += 1;
+  }
+
+  return segments;
 }
 
 exports.handler = async function (event) {
