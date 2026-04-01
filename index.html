@@ -1,1 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PDF Segment Tester</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main class="app">
+    <section class="card">
+      <h1>PDF Segment Tester</h1>
+      <p class="subtitle">
+        Upload a PDF and inspect the JSON output.
+      </p>
 
+      <form id="uploadForm" class="upload-form">
+        <label for="pdfFile" class="file-label">Choose PDF</label>
+        <input id="pdfFile" name="pdfFile" type="file" accept="application/pdf" />
+
+        <button id="runBtn" type="submit">Run Test</button>
+      </form>
+
+      <div id="status" class="status" aria-live="polite"></div>
+    </section>
+
+    <section class="card">
+      <div class="output-header">
+        <h2>JSON Output</h2>
+        <button id="copyBtn" type="button" class="secondary-btn">Copy JSON</button>
+      </div>
+
+      <pre id="jsonOutput" class="json-output">{
+  "message": "Upload a PDF and click Run Test."
+}</pre>
+    </section>
+  </main>
+
+  <script src="script.js"></script>
+</body>
+</html>
