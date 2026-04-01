@@ -1,7 +1,7 @@
 const pdfParse = require("pdf-parse");
 
 function cleanText(text) {
-  return text
+  return String(text || "")
     .replace(/\r/g, "\n")
     .replace(/[ \t]+/g, " ")
     .replace(/\n{3,}/g, "\n\n")
@@ -18,14 +18,52 @@ function filenameToTitle(fileName) {
 }
 
 function wordCount(text) {
-  return text ? text.split(/\s+/).filter(Boolean).length : 0;
+  return cleanText(text).split(/\s+/).filter(Boolean).length;
 }
 
-function isFillerSlide(text) {
-  const normalized = text.toLowerCase().trim();
-  const words = wordCount(normalized);
+function lineCount(text) {
+  return cleanText(text).split(/\n+/).filter(Boolean).length;
+}
 
-  const fillerPatterns = [
+function normalizeForMatch(text) {
+  return cleanText(text).toLowerCase();
+}
+
+function isLikelyCoverTitleSlide(text) {
+  const lines = cleanText(text)
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  const joined = normalizeForMatch(text);
+  const words = wordCount(text);
+
+  if (lines.length === 0) return true;
+
+  const hasOverviewPhrase =
+    joined.includes("overview") ||
+    joined.includes("four-part overview") ||
+    joined.includes("part overview");
+
+  const hasLongBodySentence =
+    /[.!?]/.test(text) ||
+    /\b(because|therefore|however|unlike|during|between|against|through|without|could|were|was|had|have)\b/i.test(
+      text
+    );
+
+  const looksLikeShortTitleBlock =
+    lines.length <= 4 &&
+    words <= 20 &&
+    !hasLongBodySentence;
+
+  return looksLikeShortTitleBlock || (hasOverviewPhrase && words <= 30);
+}
+
+function isFillerSlide(text, pageNumber) {
+  const normalized = normalizeForMatch(text);
+  const words = wordCount(text);
+
+  const exactFillerPatterns = [
     /^agenda$/,
     /^contents$/,
     /^questions\??$/,
@@ -34,44 +72,47 @@ function isFillerSlide(text) {
     /^thanks$/,
     /^next session$/,
     /^overview$/,
+    /^appendix$/,
     /^section \d+$/,
     /^part \d+$/,
-    /^appendix$/,
-    /^title$/,
     /^introduction$/
   ];
 
-  if (fillerPatterns.some((pattern) => pattern.test(normalized))) {
+  if (exactFillerPatterns.some((pattern) => pattern.test(normalized))) {
     return true;
   }
 
-  if (words <= 6) {
-    const shortFillerPatterns = [
-      /agenda/,
-      /questions?/,
-      /q&a/,
-      /thank you/,
-      /next session/,
-      /overview/,
-      /appendix/
-    ];
+  const shortFillerPatterns = [
+    /agenda/,
+    /questions?/,
+    /q&a/,
+    /thank you/,
+    /next session/,
+    /appendix/
+  ];
 
-    if (shortFillerPatterns.some((pattern) => pattern.test(normalized))) {
-      return true;
-    }
+  if (words <= 8 && shortFillerPatterns.some((pattern) => pattern.test(normalized))) {
+    return true;
+  }
+
+  // Stronger rule for first-slide cover/title pages
+  if (pageNumber === 1 && isLikelyCoverTitleSlide(text)) {
+    return true;
   }
 
   return false;
 }
 
 function splitIntoMeaningfulParts(pageText) {
-  const blocks = pageText
+  const cleanedPage = cleanText(pageText);
+
+  const blocks = cleanedPage
     .split(/\n\s*\n/)
     .map((part) => cleanText(part))
     .filter(Boolean);
 
   if (blocks.length < 2) {
-    return [pageText];
+    return [cleanedPage];
   }
 
   const strongBlocks = blocks.filter((block) => wordCount(block) >= 8);
@@ -80,7 +121,7 @@ function splitIntoMeaningfulParts(pageText) {
     return strongBlocks;
   }
 
-  return [pageText];
+  return [cleanedPage];
 }
 
 function buildSegments(pages) {
@@ -91,22 +132,14 @@ function buildSegments(pages) {
   for (const page of pages) {
     const pageText = cleanText(page.text);
 
-    if (!pageText) {
-      continue;
-    }
-
-    if (isFillerSlide(pageText)) {
-      continue;
-    }
+    if (!pageText) continue;
+    if (isFillerSlide(pageText, page.pageNumber)) continue;
 
     const parts = splitIntoMeaningfulParts(pageText);
 
     for (const part of parts) {
       const cleanedPart = cleanText(part);
-
-      if (!cleanedPart) {
-        continue;
-      }
+      if (!cleanedPart) continue;
 
       segments.push({
         segmentId,
