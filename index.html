@@ -9,16 +9,13 @@
 <body>
   <main class="app">
     <section class="card">
-      <h1>PDF Segment Tester</h1>
-      <p class="subtitle">
-        Upload a PDF and inspect the JSON output.
-      </p>
+      <h1>Step 1 — Segment Tester</h1>
+      <p class="subtitle">Upload a PDF and inspect the segments JSON.</p>
 
       <form id="uploadForm" class="upload-form">
         <label for="pdfFile" class="file-label">Choose PDF</label>
         <input id="pdfFile" name="pdfFile" type="file" accept="application/pdf" />
-
-        <button id="runBtn" type="submit">Run Test</button>
+        <button id="runBtn" type="submit">Run Step 1</button>
       </form>
 
       <div id="status" class="status" aria-live="polite"></div>
@@ -31,7 +28,7 @@
       </div>
 
       <pre id="jsonOutput" class="json-output">{
-  "message": "Upload a PDF and click Run Test."
+  "message": "Upload a PDF and click Run Step 1."
 }</pre>
     </section>
   </main>
