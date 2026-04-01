@@ -13,6 +13,19 @@ function renderJson(data) {
   jsonOutput.textContent = JSON.stringify(data, null, 2);
 }
 
+function arrayBufferToBase64(buffer) {
+  let binary = "";
+  const bytes = new Uint8Array(buffer);
+  const chunkSize = 0x8000;
+
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    const chunk = bytes.subarray(i, i + chunkSize);
+    binary += String.fromCharCode(...chunk);
+  }
+
+  return btoa(binary);
+}
+
 uploadForm.addEventListener("submit", async (event) => {
   event.preventDefault();
 
@@ -28,15 +41,21 @@ uploadForm.addEventListener("submit", async (event) => {
     return;
   }
 
-  setStatus("Uploading PDF and running test...");
-
-  const formData = new FormData();
-  formData.append("pdfFile", file);
+  setStatus("Reading PDF and running Step 1...");
 
   try {
+    const arrayBuffer = await file.arrayBuffer();
+    const base64 = arrayBufferToBase64(arrayBuffer);
+
     const response = await fetch("/.netlify/functions/segment", {
       method: "POST",
-      body: formData,
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        fileName: file.name,
+        pdfBase64: base64
+      })
     });
 
     const data = await response.json();
@@ -46,10 +65,10 @@ uploadForm.addEventListener("submit", async (event) => {
     }
 
     renderJson(data);
-    setStatus("Done.");
+    setStatus("Step 1 complete.");
   } catch (error) {
     renderJson({
-      error: error.message || "Something went wrong.",
+      error: error.message || "Something went wrong."
     });
     setStatus("Something went wrong.", true);
   }
@@ -59,7 +78,7 @@ copyBtn.addEventListener("click", async () => {
   try {
     await navigator.clipboard.writeText(jsonOutput.textContent);
     setStatus("JSON copied.");
-  } catch (error) {
+  } catch {
     setStatus("Could not copy JSON.", true);
   }
 });
