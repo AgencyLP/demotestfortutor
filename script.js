@@ -41,13 +41,13 @@ uploadForm.addEventListener("submit", async (event) => {
     return;
   }
 
-  setStatus("Reading PDF and running Step 1...");
+  setStatus("Running Steps 1 to 5...");
 
   try {
     const arrayBuffer = await file.arrayBuffer();
     const base64 = arrayBufferToBase64(arrayBuffer);
 
-    const response = await fetch("/.netlify/functions/segment", {
+    const segmentResponse = await fetch("/.netlify/functions/segment", {
       method: "POST",
       headers: {
         "Content-Type": "application/json"
@@ -58,14 +58,102 @@ uploadForm.addEventListener("submit", async (event) => {
       })
     });
 
-    const data = await response.json();
+    const segmentData = await segmentResponse.json();
 
-    if (!response.ok) {
-      throw new Error(data.error || "Request failed.");
+    if (!segmentResponse.ok) {
+      throw new Error(segmentData.error || "Step 1 failed.");
     }
 
-    renderJson(data);
-    setStatus("Step 1 complete.");
+    const conceptsResponse = await fetch("/.netlify/functions/concepts", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        document: segmentData.document,
+        segments: segmentData.segments
+      })
+    });
+
+    const conceptsData = await conceptsResponse.json();
+
+    if (!conceptsResponse.ok) {
+      throw new Error(conceptsData.error || "Step 2 failed.");
+    }
+
+    const matchResponse = await fetch("/.netlify/functions/match-concepts", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        document: segmentData.document,
+        segments: segmentData.segments,
+        concepts: conceptsData.concepts
+      })
+    });
+
+    const matchData = await matchResponse.json();
+
+    if (!matchResponse.ok) {
+      throw new Error(matchData.error || "Step 3 failed.");
+    }
+
+    const rolesResponse = await fetch("/.netlify/functions/roles", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        document: segmentData.document,
+        segments: matchData.segments
+      })
+    });
+
+    const rolesData = await rolesResponse.json();
+
+    if (!rolesResponse.ok) {
+      throw new Error(rolesData.error || "Step 4 failed.");
+    }
+
+    const dependenciesResponse = await fetch("/.netlify/functions/dependencies", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify({
+        document: segmentData.document,
+        segments: rolesData.segments,
+        concepts: conceptsData.concepts
+      })
+    });
+
+    const dependenciesData = await dependenciesResponse.json();
+
+    if (!dependenciesResponse.ok) {
+      throw new Error(dependenciesData.error || "Step 5 failed.");
+    }
+
+    const combined = {
+      debugVersion: "lesson-map-v4",
+      document: segmentData.document,
+      segments:
+        dependenciesData.segments ||
+        rolesData.segments ||
+        matchData.segments ||
+        segmentData.segments ||
+        [],
+      concepts: conceptsData.concepts || []
+    };
+
+    if (segmentData.warning) combined.segmentWarning = segmentData.warning;
+    if (conceptsData.warning) combined.conceptWarning = conceptsData.warning;
+    if (matchData.warning) combined.matchWarning = matchData.warning;
+    if (rolesData.warning) combined.roleWarning = rolesData.warning;
+    if (dependenciesData.warning) combined.dependencyWarning = dependenciesData.warning;
+
+    renderJson(combined);
+    setStatus("Lesson map generated.");
   } catch (error) {
     renderJson({
       error: error.message || "Something went wrong."

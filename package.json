@@ -8,5 +8,8 @@
   },
   "dependencies": {
     "pdf-parse": "^1.1.1"
+  },
+  "devDependencies": {
+    "netlify-cli": "^24.9.0"
   }
 }

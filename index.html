@@ -3,19 +3,19 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>PDF Segment Tester</title>
+  <title>Lesson Map Demo</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
   <main class="app">
     <section class="card">
-      <h1>Step 1 — Segment Tester</h1>
-      <p class="subtitle">Upload a PDF and inspect the segments JSON.</p>
+      <h1>Lesson Map Demo</h1>
+      <p class="subtitle">Upload a PDF and generate segments + concepts JSON.</p>
 
       <form id="uploadForm" class="upload-form">
         <label for="pdfFile" class="file-label">Choose PDF</label>
         <input id="pdfFile" name="pdfFile" type="file" accept="application/pdf" />
-        <button id="runBtn" type="submit">Run Step 1</button>
+        <button id="runBtn" type="submit">Generate Lesson Map</button>
       </form>
 
       <div id="status" class="status" aria-live="polite"></div>
@@ -28,7 +28,7 @@
       </div>
 
       <pre id="jsonOutput" class="json-output">{
-  "message": "Upload a PDF and click Run Step 1."
+  "message": "Upload a PDF and click Generate Lesson Map."
 }</pre>
     </section>
   </main>

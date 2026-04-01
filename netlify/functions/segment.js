@@ -18,10 +18,6 @@ function filenameToTitle(fileName) {
     .trim();
 }
 
-function wordCount(text) {
-  return cleanText(text).split(/\s+/).filter(Boolean).length;
-}
-
 function normalizeLine(line) {
   return cleanText(line).toLowerCase();
 }
@@ -41,94 +37,55 @@ function looksLikePageMarker(line) {
 function looksLikeBrandingLine(line) {
   const text = normalizeLine(line);
   return (
+    text.includes("international taxation in a nutshell") ||
     text.includes("international ll.b. program") ||
-    text.includes("business law") ||
     text.includes("faculty of law") ||
-    text.includes("thammasat university") ||
-    text.includes("international taxation in a nutshell")
+    text.includes("thammasat university")
   );
 }
 
-function looksLikeShortHeading(line) {
+function looksLikeCitationOrSourceLine(line) {
   const text = cleanText(line);
-  const words = wordCount(text);
+  const lower = text.toLowerCase();
 
-  return words > 0 && words <= 8 && text.length <= 80 && !/[.!?]$/.test(text);
-}
-
-function looksLikeNumberedSectionHeading(line) {
-  const text = cleanText(line);
-  return /^\d+\s*[\.\)]?\s*[A-Za-z]/.test(text) && wordCount(text) <= 8;
-}
-
-function hasBodyLikeContent(lines) {
-  const joined = cleanText(lines.join(" "));
-  const words = wordCount(joined);
-
-  if (words >= 20) return true;
-  if (/[.!?]/.test(joined)) return true;
-  if (/[:;]/.test(joined) && words >= 10) return true;
-
-  const bodySignals =
-    /\b(means|includes|such|under|because|however|therefore|during|between|against|without|could|were|was|had|have|received|computed|benefit|amount|paid|taxpayer)\b/i;
-
-  return bodySignals.test(joined);
-}
-
-function isLikelyCoverTitleSlide(lines) {
-  const contentLines = lines.filter(
-    (line) => !looksLikePageMarker(line) && !looksLikeBrandingLine(line)
+  return (
+    lower.includes("retrieved from") ||
+    lower.startsWith("source:") ||
+    lower.includes("http://") ||
+    lower.includes("https://") ||
+    lower.includes("www.") ||
+    /\/[A-Za-z0-9._-]+\.(html|pdf|jpg|jpeg|png)\b/i.test(text) ||
+    /^from\s+/i.test(text) ||
+    /^retrieved\s+/i.test(text)
   );
-
-  if (contentLines.length === 0) return true;
-
-  const joined = cleanText(contentLines.join(" "));
-  const words = wordCount(joined);
-
-  return contentLines.length <= 4 && words <= 20 && !hasBodyLikeContent(contentLines);
 }
 
-function isTwoLineSplitHeading(lines) {
-  if (lines.length !== 2) return false;
-
-  const first = cleanText(lines[0]);
-  const second = cleanText(lines[1]);
-  const joined = cleanText(`${first} ${second}`);
-
-  const bothShort = looksLikeShortHeading(first) && looksLikeShortHeading(second);
-  const totalShort = wordCount(joined) <= 8;
-  const noBody = !hasBodyLikeContent(lines);
-
-  return bothShort && totalShort && noBody;
-}
-
-function isLikelyDividerSlide(lines) {
-  const contentLines = lines.filter(
-    (line) => !looksLikePageMarker(line) && !looksLikeBrandingLine(line)
-  );
-
-  if (contentLines.length === 0) return true;
-
-  const joined = cleanText(contentLines.join(" "));
-  const words = wordCount(joined);
-
-  // If there is any real teaching/body content, keep it
-  if (hasBodyLikeContent(contentLines)) return false;
-
-  // Strong simple rule:
-  // very short slide with no body = divider
-  if (words <= 8) return true;
-
-  // Slightly looser fallback for short heading-only slides
-  if (
-    words <= 12 &&
-    contentLines.length <= 3 &&
-    contentLines.every((line) => looksLikeShortHeading(line) || looksLikeNumberedSectionHeading(line))
-  ) {
-    return true;
-  }
-
-  return false;
+function stripInlineSourceText(text) {
+  return cleanText(
+    String(text || "")
+      .replace(/\bRetrieved from\b[\s\S]*$/gi, "")
+      .replace(/\bSource:\b[\s\S]*$/gi, "")
+      .replace(/https?:\/\/\S+/gi, "")
+      .replace(/\bwww\.\S+/gi, "")
+      .replace(/\bcr:[A-Za-z0-9-]+\b/gi, "")
+      .replace(/\/[A-Za-z0-9._/-]+\.(html|pdf|jpg|jpeg|png)\b/gi, "")
+      .replace(/\bThe Phoenix emblem with[^.]*\./gi, "")
+      .replace(/\bThe Monument to the Great Fire of London[^.]*\./gi, "")
+      .replace(/\bThe Great Fire of London in 1666\.[^.]*\./gi, "")
+      .replace(/\bFrom The Great Fire of London[^.]*\./gi, "")
+      .replace(/\bRetrieved\b[^.]*\./gi, "")
+      .replace(/\bFrom\b[^.]*https?:\/\/\S*/gi, "")
+      .replace(/\bFrom\b[^.]*www\.\S*/gi, "")
+      .replace(/\bFrom\b[^.]*$/gi, "")
+      .replace(/\bbackground\b\.?/gi, "")
+      .replace(/\bcr\b[:\s-]?[a-z0-9-]{8,}\b/gi, "")
+      .replace(/\b[a-f0-9]{4,}-[a-f0-9-]{4,}\b/gi, "")
+      .replace(/\b[a-z0-9]{8,}\b/gi, (match) => {
+        return /[0-9]/.test(match) && /[a-z]/i.test(match) ? "" : match;
+      })
+      .replace(/\s+-\s+/g, " ")
+      .replace(/\s{2,}/g, " ")
+  ).trim();
 }
 
 function groupItemsIntoLines(items) {
@@ -163,38 +120,13 @@ function groupItemsIntoLines(items) {
     .filter(Boolean);
 }
 
-function findRepeatedRemovableLines(pages) {
-  const counts = new Map();
-  const totalPages = pages.length;
-  const threshold = Math.max(2, Math.ceil(totalPages * 0.8));
-
-  for (const page of pages) {
-    const uniqueLines = new Set(page.lines.map(normalizeLine));
-
-    for (const line of uniqueLines) {
-      if (!line) continue;
-      counts.set(line, (counts.get(line) || 0) + 1);
-    }
-  }
-
-  const removable = new Set();
-
-  for (const [line, count] of counts.entries()) {
-    if (count >= threshold && (looksLikePageMarker(line) || looksLikeBrandingLine(line))) {
-      removable.add(line);
-    }
-  }
-
-  return removable;
-}
-
-function removeSlideFurniture(lines, repeatedRemovableLines) {
+function removeSlideFurniture(lines) {
   return lines.filter((line, index, arr) => {
     const normalized = normalizeLine(line);
     if (!normalized) return false;
-
-    if (repeatedRemovableLines.has(normalized)) return false;
     if (looksLikeBrandingLine(normalized)) return false;
+    if (looksLikePageMarker(normalized)) return false;
+    if (looksLikeCitationOrSourceLine(line)) return false;
 
     if (/^\d+$/.test(normalized)) {
       const nearTop = index <= 1;
@@ -202,69 +134,156 @@ function removeSlideFurniture(lines, repeatedRemovableLines) {
       if (nearTop || nearBottom) return false;
     }
 
-    if (looksLikePageMarker(normalized)) return false;
-
     return true;
   });
 }
 
-function splitTitleAndBody(lines) {
-  if (lines.length === 0) {
-    return { title: "", text: "" };
-  }
+function buildSlideObjects(pages) {
+  return pages
+    .map((page) => {
+      const cleanedLines = removeSlideFurniture(page.lines);
+      const cleanedText = stripInlineSourceText(cleanedLines.join("\n"));
 
-  if (lines.length === 1) {
-    return { title: lines[0], text: "" };
-  }
-
-  const first = cleanText(lines[0]);
-  const restLines = lines.slice(1);
-  const rest = cleanText(restLines.join(" "));
-  const firstWords = wordCount(first);
-
-  const looksLikeHeading =
-    firstWords <= 12 &&
-    first.length <= 120 &&
-    !/[.!?]$/.test(first);
-
-  if (looksLikeHeading) {
-    return {
-      title: first,
-      text: rest
-    };
-  }
-
-  return {
-    title: "",
-    text: cleanText(lines.join(" "))
-  };
+      return {
+        source: page.pageNumber,
+        text: cleanedText
+      };
+    })
+    .filter((slide) => slide.text);
 }
 
-function buildSegments(pages) {
-  const repeatedRemovableLines = findRepeatedRemovableLines(pages);
+function fallbackSegments(slides) {
   const segments = [];
   let segmentId = 1;
   let position = 1;
 
-  for (const page of pages) {
-    const lines = removeSlideFurniture(page.lines, repeatedRemovableLines);
-    if (lines.length === 0) continue;
+  for (const slide of slides) {
+    const lines = slide.text
+      .split(/\n+/)
+      .map((line) => cleanText(line))
+      .filter(Boolean);
 
-    if (page.pageNumber === 1 && isLikelyCoverTitleSlide(lines)) {
-      continue;
-    }
+    if (!lines.length) continue;
 
-    if (isLikelyDividerSlide(lines)) {
-      continue;
-    }
+    const title = lines[0];
+    const text = cleanText(lines.slice(1).join(" ")) || title;
 
-    const { title, text } = splitTitleAndBody(lines);
-    if (!title && !text) continue;
+    const combinedWords = cleanText(`${title} ${text}`).split(/\s+/).filter(Boolean).length;
+
+    if (combinedWords <= 8) continue;
 
     segments.push({
       segmentId,
       position,
-      source: page.pageNumber,
+      source: slide.source,
+      title,
+      text: text === title ? "" : text
+    });
+
+    segmentId += 1;
+    position += 1;
+  }
+
+  return segments;
+}
+
+async function classifySlidesWithGroq(slides, documentTitle) {
+  const apiKey = process.env.GROQ_KEY;
+
+  if (!apiKey) {
+    throw new Error("Missing GROQ_KEY environment variable.");
+  }
+
+  const prompt = `
+You are helping with STEP 1 ONLY of a demo lesson-ingestion pipeline.
+
+Task:
+Given a list of cleaned slide texts from one PDF deck, decide which slides should become segments.
+
+Rules:
+- Ignore cover/title slides.
+- Ignore divider/section-break/filler slides.
+- Ignore slides that are only a short heading with no real teaching body.
+- Keep real teaching slides.
+- For kept slides, return a short title and the main body text.
+- Do NOT invent content.
+- Do NOT summarize.
+- Do NOT include ignored slides in the segments list.
+- Usually one kept slide = one segment.
+- Keep source as the original slide number.
+
+Return JSON only in this shape:
+{
+  "segments": [
+    {
+      "source": 2,
+      "title": "The slide heading",
+      "text": "Main teaching text from the slide"
+    }
+  ]
+}
+
+Document title: ${documentTitle}
+
+Slides:
+${JSON.stringify(slides, null, 2)}
+`.trim();
+
+  const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model: "llama-3.3-70b-versatile",
+      temperature: 0.1,
+      response_format: { type: "json_object" },
+      messages: [
+        {
+          role: "system",
+          content: "Return valid JSON only."
+        },
+        {
+          role: "user",
+          content: prompt
+        }
+      ]
+    })
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    throw new Error(`Groq error: ${errorText}`);
+  }
+
+  const data = await response.json();
+  const content = data?.choices?.[0]?.message?.content;
+
+  if (!content) {
+    throw new Error("Groq returned empty content.");
+  }
+
+  const parsed = JSON.parse(content);
+  return Array.isArray(parsed.segments) ? parsed.segments : [];
+}
+
+function normalizeAiSegments(aiSegments) {
+  const segments = [];
+  let segmentId = 1;
+  let position = 1;
+
+  for (const item of aiSegments) {
+    const source = Number(item?.source);
+    const title = stripInlineSourceText(item?.title || "");
+    const text = stripInlineSourceText(item?.text || "");
+
+    if (!source || (!title && !text)) continue;
+
+    segments.push({
+      segmentId,
+      position,
+      source,
       title,
       text
     });
@@ -314,17 +333,45 @@ exports.handler = async function (event) {
       }
     });
 
-    const result = {
-      document: {
-        title: filenameToTitle(fileName)
-      },
-      segments: buildSegments(pages)
-    };
+    const documentTitle = filenameToTitle(fileName);
+    const slides = buildSlideObjects(pages);
+
+    let segments;
+
+    try {
+      const aiSegments = await classifySlidesWithGroq(slides, documentTitle);
+      segments = normalizeAiSegments(aiSegments);
+
+      if (!segments.length) {
+        segments = fallbackSegments(slides);
+      }
+    } catch (aiError) {
+      segments = fallbackSegments(slides);
+
+      return {
+        statusCode: 200,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          debugVersion: "ai-deck-filter-v1-fallback",
+          warning: aiError.message,
+          document: {
+            title: documentTitle
+          },
+          segments
+        })
+      };
+    }
 
     return {
       statusCode: 200,
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(result)
+      body: JSON.stringify({
+        debugVersion: "ai-deck-filter-v1",
+        document: {
+          title: documentTitle
+        },
+        segments
+      })
     };
   } catch (error) {
     return {
