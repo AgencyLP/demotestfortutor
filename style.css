@@ -110,10 +110,7 @@ button:hover {
     padding: 18px;
   }
 
-  button {
-    width: 100%;
-  }
-
+  button,
   .secondary-btn {
     width: 100%;
   }
