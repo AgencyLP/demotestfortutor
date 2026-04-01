@@ -4,8 +4,9 @@ function cleanText(text) {
   return String(text || "")
     .replace(/\r/g, "\n")
     .replace(/[ \t]+/g, " ")
-    .replace(/\n{3,}/g, "\n\n")
+    .replace(/\u00A0/g, " ")
     .replace(/[•▪◦●]/g, "•")
+    .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
 
@@ -25,16 +26,8 @@ function normalizeLine(line) {
   return cleanText(line).toLowerCase();
 }
 
-function splitIntoLines(text) {
-  return String(text || "")
-    .split(/\n+/)
-    .map((line) => cleanText(line))
-    .filter(Boolean);
-}
-
 function looksLikePageMarker(line) {
   const text = normalizeLine(line);
-
   return (
     /slide\s+\d+\s+of\s+\d+/.test(text) ||
     /page\s+\d+\s+of\s+\d+/.test(text) ||
@@ -44,55 +37,24 @@ function looksLikePageMarker(line) {
   );
 }
 
-function isLikelyCoverTitleSlide(text) {
-  const lines = splitIntoLines(text);
-  const words = wordCount(text);
-  const joined = normalizeLine(text);
+function isLikelyCoverTitleSlide(lines) {
+  const joined = cleanText(lines.join(" "));
+  const words = wordCount(joined);
 
   if (lines.length === 0) return true;
 
-  const hasBodyLikeSentence =
-    /[.!?]/.test(text) ||
-    /\b(unlike|because|however|therefore|during|between|against|without|could|were|was|had|have)\b/i.test(text);
+  const hasBodySentence =
+    /[.!?]/.test(joined) ||
+    /\b(unlike|because|however|therefore|during|between|against|without|could|were|was|had|have)\b/i.test(joined);
 
-  const looksLikeShortCover =
-    lines.length <= 4 &&
-    words <= 20 &&
-    !hasBodyLikeSentence;
-
-  const hasOverviewPhrase =
-    joined.includes("overview") && words <= 30;
-
-  return looksLikeShortCover || hasOverviewPhrase;
+  return lines.length <= 4 && words <= 20 && !hasBodySentence;
 }
 
-function isFillerSlide(text, pageNumber) {
-  const normalized = normalizeLine(text);
-  const words = wordCount(text);
-
-  const exactShortFiller = [
-    /^agenda$/,
-    /^contents$/,
-    /^questions\??$/,
-    /^q&a$/,
-    /^thank you$/,
-    /^thanks$/,
-    /^next session$/
-  ];
-
-  if (exactShortFiller.some((pattern) => pattern.test(normalized))) {
-    return true;
-  }
-
-  if (pageNumber === 1 && isLikelyCoverTitleSlide(text)) {
-    return true;
-  }
-
-  if (words <= 3 && looksLikePageMarker(normalized)) {
-    return true;
-  }
-
-  return false;
+function splitIntoLines(text) {
+  return String(text || "")
+    .split(/\n+/)
+    .map((line) => cleanText(line))
+    .filter(Boolean);
 }
 
 function findRepeatedRemovableLines(pages) {
@@ -101,38 +63,30 @@ function findRepeatedRemovableLines(pages) {
   const threshold = Math.max(2, Math.ceil(totalPages * 0.9));
 
   for (const page of pages) {
-    const uniqueLines = new Set(splitIntoLines(page.text).map(normalizeLine));
-
+    const uniqueLines = new Set(page.lines.map(normalizeLine));
     for (const line of uniqueLines) {
       if (!line) continue;
       counts.set(line, (counts.get(line) || 0) + 1);
     }
   }
 
-  const repeatedRemovable = new Set();
+  const removable = new Set();
 
   for (const [line, count] of counts.entries()) {
-    const repeatedOnMostSlides = count >= threshold;
-
-    if (repeatedOnMostSlides && looksLikePageMarker(line)) {
-      repeatedRemovable.add(line);
+    if (count >= threshold && looksLikePageMarker(line)) {
+      removable.add(line);
     }
   }
 
-  return repeatedRemovable;
+  return removable;
 }
 
-function removeRepeatedSlideFurniture(text, repeatedRemovableLines) {
-  const lines = splitIntoLines(text);
-
+function removeSlideFurniture(lines, repeatedRemovableLines) {
   return lines.filter((line) => {
     const normalized = normalizeLine(line);
-
     if (!normalized) return false;
-    if (looksLikePageMarker(normalized) && repeatedRemovableLines.has(normalized)) {
-      return false;
-    }
-
+    if (repeatedRemovableLines.has(normalized)) return false;
+    if (looksLikePageMarker(normalized)) return false;
     return true;
   });
 }
@@ -143,47 +97,29 @@ function splitTitleAndBody(lines) {
   }
 
   if (lines.length === 1) {
+    return { title: lines[0], text: "" };
+  }
+
+  const first = cleanText(lines[0]);
+  const rest = cleanText(lines.slice(1).join(" "));
+  const firstWords = wordCount(first);
+
+  const looksLikeHeading =
+    firstWords <= 12 &&
+    !/[.!?]$/.test(first) &&
+    first.length <= 120;
+
+  if (looksLikeHeading) {
     return {
-      title: lines[0],
-      text: ""
+      title: first,
+      text: rest
     };
   }
 
   return {
-    title: cleanText(lines[0]),
-    text: cleanText(lines.slice(1).join(" "))
+    title: "",
+    text: cleanText(lines.join(" "))
   };
-}
-
-function splitIntoMeaningfulParts(segment) {
-  const blocks = segment.text
-    .split(/\n\s*\n/)
-    .map((part) => cleanText(part))
-    .filter(Boolean);
-
-  if (blocks.length < 2) {
-    return [segment];
-  }
-
-  const strongBlocks = blocks.filter((block) => wordCount(block) >= 8);
-
-  if (strongBlocks.length >= 2 && strongBlocks.length <= 3) {
-    return strongBlocks.map((block, index) => {
-      if (index === 0) {
-        return {
-          title: segment.title,
-          text: block
-        };
-      }
-
-      return {
-        title: segment.title,
-        text: block
-      };
-    });
-  }
-
-  return [segment];
 }
 
 function buildSegments(pages) {
@@ -193,43 +129,62 @@ function buildSegments(pages) {
   let position = 1;
 
   for (const page of pages) {
-    const rawText = cleanText(page.text);
+    let lines = removeSlideFurniture(page.lines, repeatedRemovableLines);
+    if (lines.length === 0) continue;
 
-    if (!rawText) continue;
-    if (isFillerSlide(rawText, page.pageNumber)) continue;
+    if (page.pageNumber === 1 && isLikelyCoverTitleSlide(lines)) {
+      continue;
+    }
 
-    const cleanedLines = removeRepeatedSlideFurniture(rawText, repeatedRemovableLines);
-    const { title, text } = splitTitleAndBody(cleanedLines);
+    const { title, text } = splitTitleAndBody(lines);
 
     if (!title && !text) continue;
 
-    const initialSegment = {
+    segments.push({
+      segmentId,
+      position,
+      source: page.pageNumber,
       title,
       text
-    };
+    });
 
-    const parts = splitIntoMeaningfulParts(initialSegment);
-
-    for (const part of parts) {
-      const partTitle = cleanText(part.title);
-      const partText = cleanText(part.text);
-
-      if (!partTitle && !partText) continue;
-
-      segments.push({
-        segmentId,
-        position,
-        source: page.pageNumber,
-        title: partTitle,
-        text: partText
-      });
-
-      segmentId += 1;
-      position += 1;
-    }
+    segmentId += 1;
+    position += 1;
   }
 
   return segments;
+}
+
+function groupItemsIntoLines(items) {
+  const lineMap = new Map();
+
+  for (const item of items) {
+    const str = cleanText(item.str);
+    if (!str) continue;
+
+    const y = Math.round(item.transform[5]);
+    if (!lineMap.has(y)) {
+      lineMap.set(y, []);
+    }
+
+    lineMap.get(y).push({
+      x: item.transform[4],
+      text: str
+    });
+  }
+
+  const sortedY = Array.from(lineMap.keys()).sort((a, b) => b - a);
+
+  const lines = sortedY.map((y) => {
+    const parts = lineMap
+      .get(y)
+      .sort((a, b) => a.x - b.x)
+      .map((part) => part.text);
+
+    return cleanText(parts.join(" "));
+  });
+
+  return lines.filter(Boolean);
 }
 
 exports.handler = async function (event) {
@@ -259,12 +214,14 @@ exports.handler = async function (event) {
     await pdfParse(pdfBuffer, {
       pagerender: async (pageData) => {
         const textContent = await pageData.getTextContent();
-        const text = textContent.items.map((item) => item.str).join(" ");
+        const lines = groupItemsIntoLines(textContent.items);
+
         pages.push({
           pageNumber: pages.length + 1,
-          text
+          lines
         });
-        return text;
+
+        return lines.join("\n");
       }
     });
 
