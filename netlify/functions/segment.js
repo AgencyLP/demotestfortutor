@@ -108,30 +108,22 @@ function isLikelyDividerSlide(lines) {
   );
 
   if (contentLines.length === 0) return true;
-  if (hasBodyLikeContent(contentLines)) return false;
 
   const joined = cleanText(contentLines.join(" "));
   const words = wordCount(joined);
 
-  if (isTwoLineSplitHeading(contentLines)) {
-    return true;
-  }
+  // If there is any real teaching/body content, keep it
+  if (hasBodyLikeContent(contentLines)) return false;
 
-  if (contentLines.length <= 2 && words <= 10) return true;
+  // Strong simple rule:
+  // very short slide with no body = divider
+  if (words <= 8) return true;
 
+  // Slightly looser fallback for short heading-only slides
   if (
-    contentLines.length <= 3 &&
     words <= 12 &&
+    contentLines.length <= 3 &&
     contentLines.every((line) => looksLikeShortHeading(line) || looksLikeNumberedSectionHeading(line))
-  ) {
-    return true;
-  }
-
-  if (
-    contentLines.length === 2 &&
-    looksLikeNumberedSectionHeading(contentLines[0]) &&
-    looksLikeShortHeading(contentLines[1]) &&
-    wordCount(joined) <= 8
   ) {
     return true;
   }
