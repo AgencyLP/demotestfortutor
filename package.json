@@ -2,9 +2,11 @@
   "name": "pdf-segment-tester",
   "version": "1.0.0",
   "private": true,
-  "description": "Mini demo for uploading a PDF and viewing JSON output.",
+  "description": "Mini demo for uploading a PDF and viewing Step 1 segments JSON.",
   "scripts": {
     "start": "netlify dev"
   },
-  "dependencies": {}
+  "dependencies": {
+    "pdf-parse": "^1.1.1"
+  }
 }
