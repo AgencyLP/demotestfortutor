@@ -51,50 +51,86 @@ function looksLikeBrandingLine(line) {
     text.includes("international ll.b. program") ||
     text.includes("business law") ||
     text.includes("faculty of law") ||
-    text.includes("thammasat university")
+    text.includes("thammasat university") ||
+    text.includes("international taxation in a nutshell")
   );
 }
 
-function isLikelyCoverTitleSlide(lines) {
+function looksLikeShortHeading(line) {
+  const text = cleanText(line);
+  const words = wordCount(text);
+
+  return (
+    words > 0 &&
+    words <= 8 &&
+    text.length <= 80 &&
+    !/[.!?]$/.test(text)
+  );
+}
+
+function looksLikeNumberedSectionHeading(line) {
+  const text = cleanText(line);
+  return /^\d+\s*[\.\)]?\s*[A-Za-z]/.test(text) && wordCount(text) <= 8;
+}
+
+function hasBodyLikeContent(lines) {
   const joined = cleanText(lines.join(" "));
   const words = wordCount(joined);
 
-  if (lines.length === 0) return true;
+  if (words >= 20) return true;
+  if (/[.!?]/.test(joined)) return true;
+  if (/[:;]/.test(joined) && words >= 10) return true;
 
-  const hasBodySentence =
-    /[.!?]/.test(joined) ||
-    /\b(unlike|because|however|therefore|during|between|against|without|could|were|was|had|have|means|includes)\b/i.test(joined);
+  const bodySignals =
+    /\b(means|includes|such|under|because|however|therefore|during|between|against|without|could|were|was|had|have|received|computed|benefit|amount|paid|taxpayer)\b/i;
 
-  return lines.length <= 4 && words <= 20 && !hasBodySentence;
+  return bodySignals.test(joined);
 }
 
-function isLikelyDividerSlide(lines) {
-  if (!lines.length) return false;
-
-  const nonFurniture = lines.filter(
+function isLikelyCoverTitleSlide(lines) {
+  const contentLines = lines.filter(
     (line) => !looksLikePageMarker(line) && !looksLikeBrandingLine(line)
   );
 
-  if (nonFurniture.length === 0) return true;
+  if (contentLines.length === 0) return true;
 
-  const joined = cleanText(nonFurniture.join(" "));
+  const joined = cleanText(contentLines.join(" "));
   const words = wordCount(joined);
 
-  const hasBodySentence =
-    /[.!?]/.test(joined) ||
-    /\b(unlike|because|however|therefore|during|between|against|without|could|were|was|had|have|means|includes)\b/i.test(joined);
+  return contentLines.length <= 4 && words <= 20 && !hasBodyLikeContent(contentLines);
+}
 
-  const numberedHeadingOnly =
-    nonFurniture.length <= 2 &&
-    words <= 8 &&
-    /^\d+\s*[\.\)]/.test(nonFurniture[0]);
+function isLikelyDividerSlide(lines) {
+  const contentLines = lines.filter(
+    (line) => !looksLikePageMarker(line) && !looksLikeBrandingLine(line)
+  );
 
-  const shortHeadingOnly =
-    nonFurniture.length <= 2 &&
-    words <= 10 &&
-    !hasBodySentence;
+  if (contentLines.length === 0) return true;
+  if (hasBodyLikeContent(contentLines)) return false;
 
-  return numberedHeadingOnly || shortHeadingOnly;
+  const joined = cleanText(contentLines.join(" "));
+  const words = wordCount(joined);
+
+  if (contentLines.length <= 2 && words <= 10) return true;
+
+  if (
+    contentLines.length <= 3 &&
+    words <= 12 &&
+    contentLines.every((line) => looksLikeShortHeading(line) || looksLikeNumberedSectionHeading(line))
+  ) {
+    return true;
+  }
+
+  if (
+    contentLines.length === 2 &&
+    looksLikeNumberedSectionHeading(contentLines[0]) &&
+    looksLikeShortHeading(contentLines[1]) &&
+    wordCount(joined) <= 8
+  ) {
+    return true;
+  }
+
+  return false;
 }
 
 function groupItemsIntoLines(items) {
@@ -117,16 +153,16 @@ function groupItemsIntoLines(items) {
 
   const sortedY = Array.from(lineMap.keys()).sort((a, b) => b - a);
 
-  const lines = sortedY.map((y) => {
-    const parts = lineMap
-      .get(y)
-      .sort((a, b) => a.x - b.x)
-      .map((part) => part.text);
+  return sortedY
+    .map((y) => {
+      const parts = lineMap
+        .get(y)
+        .sort((a, b) => a.x - b.x)
+        .map((part) => part.text);
 
-    return cleanText(parts.join(" "));
-  });
-
-  return lines.filter(Boolean);
+      return cleanText(parts.join(" "));
+    })
+    .filter(Boolean);
 }
 
 function findRepeatedRemovableLines(pages) {
@@ -160,8 +196,8 @@ function removeSlideFurniture(lines, repeatedRemovableLines) {
     if (!normalized) return false;
 
     if (repeatedRemovableLines.has(normalized)) return false;
+    if (looksLikeBrandingLine(normalized)) return false;
 
-    // Remove lone page numbers especially at top/bottom
     if (/^\d+$/.test(normalized)) {
       const nearTop = index <= 1;
       const nearBottom = index >= arr.length - 2;
@@ -213,7 +249,7 @@ function buildSegments(pages) {
   let position = 1;
 
   for (const page of pages) {
-    let lines = removeSlideFurniture(page.lines, repeatedRemovableLines);
+    const lines = removeSlideFurniture(page.lines, repeatedRemovableLines);
     if (lines.length === 0) continue;
 
     if (page.pageNumber === 1 && isLikelyCoverTitleSlide(lines)) {
@@ -225,7 +261,6 @@ function buildSegments(pages) {
     }
 
     const { title, text } = splitTitleAndBody(lines);
-
     if (!title && !text) continue;
 
     segments.push({
