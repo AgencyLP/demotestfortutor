@@ -17,14 +17,55 @@ const ALLOWED_ROLES = [
   "Summary"
 ];
 
+const PRIMARY_MODEL = process.env.GROQ_MODEL || "llama-3.1-8b-instant";
+const BACKUP_MODEL = process.env.GROQ_BACKUP_MODEL || "llama3-8b-8192";
+const MAX_SEGMENT_TEXT = Number(process.env.LESSON_SEGMENT_TEXT_LIMIT || 450);
+
+function compactSegment(segment) {
+  return {
+    segmentId: Number(segment.segmentId),
+    position: Number(segment.position),
+    title: cleanText(segment.title || ""),
+    text: cleanText(segment.text || "").slice(0, MAX_SEGMENT_TEXT),
+    concept: cleanText(segment.concept || "")
+  };
+}
+
+function inferRole(segment, index, total) {
+  const title = cleanText(segment.title || "");
+  const text = cleanText(segment.text || "");
+  const combined = `${title}\n${text}`;
+
+  if (index === 0) return "Introduction";
+  if (index === total - 1 && /summary|conclusion|wrap.?up|takeaway/i.test(combined)) {
+    return "Summary";
+  }
+  if (/what is|defined as|definition|refers to|means\b/i.test(combined)) {
+    return "Definition";
+  }
+  if (/for example|for instance|such as|case study|e\.g\./i.test(combined)) {
+    return "Example";
+  }
+  if (/compare|versus|vs\.|difference|similarit/i.test(combined)) {
+    return "Comparison";
+  }
+  if (/application|in practice|used to|used in|real world|practical/i.test(combined)) {
+    return "Application";
+  }
+  if (/summary|conclusion|recap|overall|legacy|impact/i.test(combined)) {
+    return "Summary";
+  }
+
+  return "Explanation";
+}
+
 function normalizeMatchedRoles(aiSegments, originalSegments) {
   const originalById = new Map(
     originalSegments.map((segment) => [Number(segment.segmentId), segment])
   );
+  const matchedById = new Map();
 
-  const matchedSegments = [];
-
-  for (const item of aiSegments) {
+  for (const item of aiSegments || []) {
     const segmentId = Number(item?.segmentId);
     const role = cleanText(item?.role || "");
     const original = originalById.get(segmentId);
@@ -32,96 +73,56 @@ function normalizeMatchedRoles(aiSegments, originalSegments) {
     if (!original) continue;
     if (!ALLOWED_ROLES.includes(role)) continue;
 
-    matchedSegments.push({
-      ...original,
-      role
-    });
+    matchedById.set(segmentId, { ...original, role });
   }
 
-  if (matchedSegments.length === originalSegments.length) {
-    return matchedSegments.sort((a, b) => a.position - b.position);
-  }
-
-  return originalSegments.map((segment) => {
-    const found = matchedSegments.find(
-      (matched) => matched.segmentId === segment.segmentId
-    );
-
+  return originalSegments.map((segment, index) => {
+    const found = matchedById.get(segment.segmentId);
     if (found) return found;
 
     return {
       ...segment,
-      role: ""
+      role: inferRole(segment, index, originalSegments.length)
     };
   });
 }
 
 function fallbackRoles(segments) {
-  return segments.map((segment, index) => {
-    let role = "Explanation";
-
-    if (index === 0) {
-      role = "Introduction";
-    } else if (/what is|means|defined as|definition/i.test(segment.text || "")) {
-      role = "Definition";
-    } else if (/for example|for instance|such as/i.test(segment.text || "")) {
-      role = "Example";
-    } else if (/in conclusion|overall|in summary|legacy|impact/i.test(segment.title || "")) {
-      role = "Summary";
-    }
-
-    return {
-      ...segment,
-      role
-    };
-  });
+  return segments.map((segment, index) => ({
+    ...segment,
+    role: inferRole(segment, index, segments.length)
+  }));
 }
 
-async function matchRolesWithGroq(documentTitle, segments) {
+function buildPrompt(documentTitle, segments) {
+  return [
+    "You are helping with STEP 4 ONLY of a demo lesson-ingestion pipeline.",
+    "Task: assign exactly one teaching role to each segment.",
+    "Return valid JSON only.",
+    "",
+    "Allowed roles only:",
+    ...ALLOWED_ROLES.map((role) => `- ${role}`),
+    "",
+    "Rules:",
+    "- Choose one main role only.",
+    "- Use only the allowed role list.",
+    "- Keep the original segmentId.",
+    "",
+    'Return JSON in this exact shape:',
+    '{',
+    '  "segments": [',
+    '    { "segmentId": 1, "role": "Explanation" }',
+    '  ]',
+    '}',
+    "",
+    `Document title: ${documentTitle}`,
+    `Segments: ${JSON.stringify(segments.map(compactSegment))}`
+  ].join("\n");
+}
+
+async function callGroq(model, prompt) {
   const apiKey = process.env.GROQ_KEY;
-
-  if (!apiKey) {
-    throw new Error("Missing GROQ_KEY environment variable.");
-  }
-
-  const prompt = `
-You are helping with STEP 4 ONLY of a demo lesson-ingestion pipeline.
-
-Task:
-Given a document title and a list of segments that already have concepts assigned, assign exactly ONE teaching role to each segment.
-
-Allowed roles only:
-- Introduction = opens the topic, frames what is coming, or gives orientation
-- Definition = states what something is
-- Explanation = explains how or why something works
-- Example = gives a concrete case or instance
-- Comparison = contrasts two or more things
-- Application = shows use in practice or consequence in action
-- Summary = wraps up or restates key takeaways
-
-Rules:
-- Use ONLY the allowed roles above.
-- Assign exactly ONE role per segment.
-- Do NOT invent a new role.
-- Choose the single best fit based on the segment’s main teaching job.
-- Keep the original segmentId.
-- Return JSON only.
-
-Return JSON in this exact shape:
-{
-  "segments": [
-    {
-      "segmentId": 1,
-      "role": "Explanation"
-    }
-  ]
-}
-
-Document title: ${documentTitle}
-
-Segments:
-${JSON.stringify(segments, null, 2)}
-`.trim();
+  if (!apiKey) throw new Error("Missing GROQ_KEY environment variable.");
 
   const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
@@ -130,33 +131,26 @@ ${JSON.stringify(segments, null, 2)}
       Authorization: `Bearer ${apiKey}`
     },
     body: JSON.stringify({
-      model: "llama-3.3-70b-versatile",
+      model,
       temperature: 0.1,
       response_format: { type: "json_object" },
       messages: [
-        {
-          role: "system",
-          content: "Return valid JSON only."
-        },
-        {
-          role: "user",
-          content: prompt
-        }
+        { role: "system", content: "Return valid JSON only." },
+        { role: "user", content: prompt }
       ]
     })
   });
 
   if (!response.ok) {
     const errorText = await response.text();
-    throw new Error(`Groq error: ${errorText}`);
+    const error = new Error(`Groq error (${model}): ${errorText}`);
+    error.statusCode = response.status;
+    throw error;
   }
 
   const data = await response.json();
   const content = data?.choices?.[0]?.message?.content;
-
-  if (!content) {
-    throw new Error("Groq returned empty content.");
-  }
+  if (!content) throw new Error(`Groq returned empty content for ${model}.`);
 
   const parsed = JSON.parse(content);
   return Array.isArray(parsed.segments) ? parsed.segments : [];
@@ -185,37 +179,46 @@ exports.handler = async function (event) {
     }
 
     const documentTitle = cleanText(document.title || "Untitled Document");
+    const prompt = buildPrompt(documentTitle, segments);
+    const warnings = [];
 
-    let matchedSegments;
+    for (const model of [PRIMARY_MODEL, BACKUP_MODEL]) {
+      try {
+        const aiSegments = await callGroq(model, prompt);
+        const matchedSegments = normalizeMatchedRoles(aiSegments, segments);
 
-    try {
-      const aiSegments = await matchRolesWithGroq(documentTitle, segments);
-      matchedSegments = normalizeMatchedRoles(aiSegments, segments);
-    } catch (aiError) {
-      matchedSegments = fallbackRoles(segments);
+        return {
+          statusCode: 200,
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            debugVersion: "roles-v2",
+            document: { title: documentTitle },
+            model,
+            warnings,
+            segments: matchedSegments
+          })
+        };
+      } catch (error) {
+        warnings.push(error.message);
 
-      return {
-        statusCode: 200,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          debugVersion: "roles-v1-fallback",
-          warning: aiError.message,
-          document: {
-            title: documentTitle
-          },
-          segments: matchedSegments
-        })
-      };
+        const isRateLimited =
+          error.statusCode === 429 ||
+          /rate limit|tokens per day|rate_limit_exceeded/i.test(error.message);
+
+        if (!isRateLimited) break;
+      }
     }
+
+    const matchedSegments = fallbackRoles(segments);
 
     return {
       statusCode: 200,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        debugVersion: "roles-v1",
-        document: {
-          title: documentTitle
-        },
+        debugVersion: "roles-v2-fallback",
+        document: { title: documentTitle },
+        warning: "Used fallback role tagging.",
+        warnings,
         segments: matchedSegments
       })
     };

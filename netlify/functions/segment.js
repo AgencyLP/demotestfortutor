@@ -10,6 +10,10 @@ function cleanText(text) {
     .trim();
 }
 
+function normalizeLine(line) {
+  return cleanText(line).toLowerCase();
+}
+
 function filenameToTitle(fileName) {
   return String(fileName || "Untitled Document")
     .replace(/\.pdf$/i, "")
@@ -18,8 +22,31 @@ function filenameToTitle(fileName) {
     .trim();
 }
 
-function normalizeLine(line) {
-  return cleanText(line).toLowerCase();
+function wordCount(text) {
+  return cleanText(text).split(/\s+/).filter(Boolean).length;
+}
+
+function sentenceCount(text) {
+  return cleanText(text)
+    .split(/[.!?]+/)
+    .map((part) => cleanText(part))
+    .filter(Boolean).length;
+}
+
+function uniqueWordCount(text) {
+  return new Set(
+    cleanText(text)
+      .toLowerCase()
+      .split(/\s+/)
+      .filter(Boolean)
+  ).size;
+}
+
+function isMostlyUppercase(text) {
+  const letters = String(text || "").replace(/[^A-Za-z]/g, "");
+  if (letters.length < 6) return false;
+  const upper = letters.replace(/[^A-Z]/g, "").length;
+  return upper / letters.length >= 0.72;
 }
 
 function looksLikePageMarker(line) {
@@ -34,16 +61,6 @@ function looksLikePageMarker(line) {
   );
 }
 
-function looksLikeBrandingLine(line) {
-  const text = normalizeLine(line);
-  return (
-    text.includes("international taxation in a nutshell") ||
-    text.includes("international ll.b. program") ||
-    text.includes("faculty of law") ||
-    text.includes("thammasat university")
-  );
-}
-
 function looksLikeCitationOrSourceLine(line) {
   const text = cleanText(line);
   const lower = text.toLowerCase();
@@ -51,41 +68,48 @@ function looksLikeCitationOrSourceLine(line) {
   return (
     lower.includes("retrieved from") ||
     lower.startsWith("source:") ||
+    lower.startsWith("sources:") ||
     lower.includes("http://") ||
     lower.includes("https://") ||
     lower.includes("www.") ||
-    /\/[A-Za-z0-9._-]+\.(html|pdf|jpg|jpeg|png)\b/i.test(text) ||
-    /^from\s+/i.test(text) ||
-    /^retrieved\s+/i.test(text)
+    /\/[A-Za-z0-9._/-]+\.(html|pdf|jpg|jpeg|png)\b/i.test(text)
   );
 }
 
-function stripInlineSourceText(text) {
+function looksLikeBrandingLine(line) {
+  const text = normalizeLine(line);
+  if (!text) return false;
+
+  const genericBrandSignals = [
+    /copyright/,
+    /all rights reserved/,
+    /faculty of/,
+    /university$/,
+    /school of/,
+    /department of/,
+    /prepared by/,
+    /presented by/
+  ];
+
+  return genericBrandSignals.some((pattern) => pattern.test(text));
+}
+
+function stripInlineNoise(text) {
   return cleanText(
     String(text || "")
       .replace(/\bRetrieved from\b[\s\S]*$/gi, "")
       .replace(/\bSource:\b[\s\S]*$/gi, "")
       .replace(/https?:\/\/\S+/gi, "")
       .replace(/\bwww\.\S+/gi, "")
-      .replace(/\bcr:[A-Za-z0-9-]+\b/gi, "")
-      .replace(/\/[A-Za-z0-9._/-]+\.(html|pdf|jpg|jpeg|png)\b/gi, "")
-      .replace(/\bThe Phoenix emblem with[^.]*\./gi, "")
-      .replace(/\bThe Monument to the Great Fire of London[^.]*\./gi, "")
-      .replace(/\bThe Great Fire of London in 1666\.[^.]*\./gi, "")
-      .replace(/\bFrom The Great Fire of London[^.]*\./gi, "")
-      .replace(/\bRetrieved\b[^.]*\./gi, "")
-      .replace(/\bFrom\b[^.]*https?:\/\/\S*/gi, "")
-      .replace(/\bFrom\b[^.]*www\.\S*/gi, "")
-      .replace(/\bFrom\b[^.]*$/gi, "")
-      .replace(/\bbackground\b\.?/gi, "")
-      .replace(/\bcr\b[:\s-]?[a-z0-9-]{8,}\b/gi, "")
-      .replace(/\b[a-f0-9]{4,}-[a-f0-9-]{4,}\b/gi, "")
-      .replace(/\b[a-z0-9]{8,}\b/gi, (match) => {
-        return /[0-9]/.test(match) && /[a-z]/i.test(match) ? "" : match;
+      .replace(/[⚡☀️🌬️🌱🍃🍬💧💨🔬🔄]+/g, " ")
+      .replace(/\b[a-f0-9]{4,}(?:\s*-\s*[a-f0-9]{4,})+\b/gi, " ")
+      .replace(/\b[a-z]*\d+[a-z\d-]*\b/gi, (match) => {
+        const hasLetters = /[a-z]/i.test(match);
+        const hasDigits = /\d/.test(match);
+        return hasLetters && hasDigits && match.length >= 6 ? " " : match;
       })
-      .replace(/\s+-\s+/g, " ")
       .replace(/\s{2,}/g, " ")
-  ).trim();
+  );
 }
 
 function groupItemsIntoLines(items) {
@@ -96,9 +120,7 @@ function groupItemsIntoLines(items) {
     if (!str) continue;
 
     const y = Math.round(item.transform[5]);
-    if (!lineMap.has(y)) {
-      lineMap.set(y, []);
-    }
+    if (!lineMap.has(y)) lineMap.set(y, []);
 
     lineMap.get(y).push({
       x: item.transform[4],
@@ -124,8 +146,8 @@ function removeSlideFurniture(lines) {
   return lines.filter((line, index, arr) => {
     const normalized = normalizeLine(line);
     if (!normalized) return false;
-    if (looksLikeBrandingLine(normalized)) return false;
-    if (looksLikePageMarker(normalized)) return false;
+    if (looksLikeBrandingLine(line)) return false;
+    if (looksLikePageMarker(line)) return false;
     if (looksLikeCitationOrSourceLine(line)) return false;
 
     if (/^\d+$/.test(normalized)) {
@@ -142,157 +164,289 @@ function buildSlideObjects(pages) {
   return pages
     .map((page) => {
       const cleanedLines = removeSlideFurniture(page.lines);
-      const cleanedText = stripInlineSourceText(cleanedLines.join("\n"));
+      const cleanedText = stripInlineNoise(cleanedLines.join("\n"));
+      const lines = cleanedText
+        .split(/\n+/)
+        .map((line) => cleanText(line))
+        .filter(Boolean);
 
       return {
         source: page.pageNumber,
-        text: cleanedText
+        lines,
+        text: cleanText(lines.join("\n"))
       };
     })
     .filter((slide) => slide.text);
 }
 
-function fallbackSegments(slides) {
-  const segments = [];
-  let segmentId = 1;
-  let position = 1;
+const META_TITLE_PATTERNS = [
+  /^agenda$/i,
+  /^outline$/i,
+  /^overview$/i,
+  /^contents?$/i,
+  /^objectives?$/i,
+  /^(learning\s+)?objectives?$/i,
+  /^today['’]?s?\s+topics?$/i,
+  /^topics?$/i,
+  /^introduction$/i,
+  /^summary$/i,
+  /^recap$/i,
+  /^review$/i,
+  /^(next\s+steps?|wrap[\s-]?up)$/i,
+  /^(q\s*&\s*a|questions?)$/i,
+  /^thank\s+you$/i,
+  /^references?$/i,
+  /^appendix$/i,
+  /^welcome$/i,
+  /^lesson\s+review$/i,
+  /^course\s+(overview|outline|objectives?)$/i,
+  /^lesson\s+(overview|outline|objectives?)$/i,
+  /^module\s+(overview|outline|objectives?)$/i
+];
 
-  for (const slide of slides) {
-    const lines = slide.text
-      .split(/\n+/)
-      .map((line) => cleanText(line))
-      .filter(Boolean);
-
-    if (!lines.length) continue;
-
-    const title = lines[0];
-    const text = cleanText(lines.slice(1).join(" ")) || title;
-
-    const combinedWords = cleanText(`${title} ${text}`).split(/\s+/).filter(Boolean).length;
-
-    if (combinedWords <= 8) continue;
-
-    segments.push({
-      segmentId,
-      position,
-      source: slide.source,
-      title,
-      text: text === title ? "" : text
-    });
-
-    segmentId += 1;
-    position += 1;
-  }
-
-  return segments;
+function isMetaHeading(title) {
+  const value = cleanText(title).replace(/[:\-–—.!]+$/g, "").trim();
+  if (!value) return true;
+  return META_TITLE_PATTERNS.some((pattern) => pattern.test(value));
 }
 
-async function classifySlidesWithGroq(slides, documentTitle) {
-  const apiKey = process.env.GROQ_KEY;
-
-  if (!apiKey) {
-    throw new Error("Missing GROQ_KEY environment variable.");
-  }
-
-  const prompt = `
-You are helping with STEP 1 ONLY of a demo lesson-ingestion pipeline.
-
-Task:
-Given a list of cleaned slide texts from one PDF deck, decide which slides should become segments.
-
-Rules:
-- Ignore cover/title slides.
-- Ignore divider/section-break/filler slides.
-- Ignore slides that are only a short heading with no real teaching body.
-- Keep real teaching slides.
-- For kept slides, return a short title and the main body text.
-- Do NOT invent content.
-- Do NOT summarize.
-- Do NOT include ignored slides in the segments list.
-- Usually one kept slide = one segment.
-- Keep source as the original slide number.
-
-Return JSON only in this shape:
-{
-  "segments": [
-    {
-      "source": 2,
-      "title": "The slide heading",
-      "text": "Main teaching text from the slide"
-    }
-  ]
+function bulletLineCount(lines) {
+  return lines.filter((line) => {
+    const text = cleanText(line);
+    return (
+      /^[\u2022\u2023\u25E6\u2043•\-–—*]\s*/.test(text) ||
+      /^\d+[.)-]\s+/.test(text) ||
+      /✓|✔|☑|□|■|▪/.test(text)
+    );
+  }).length;
 }
 
-Document title: ${documentTitle}
+function titleLooksLikeDeckIntro(title) {
+  const value = normalizeLine(title);
+  return (
+    value.includes("mini-lesson") ||
+    value.includes("lesson") ||
+    value.includes("test deck") ||
+    value.includes("overview")
+  );
+}
 
-Slides:
-${JSON.stringify(slides, null, 2)}
-`.trim();
+function metaScore(slide, index, totalSlides) {
+  const lines = slide.lines || [];
+  const text = cleanText(slide.text || "");
+  const words = wordCount(text);
+  const uniqueWords = uniqueWordCount(text);
+  const sentences = sentenceCount(text);
+  const firstLine = cleanText(lines[0] || "");
+  const normalizedFirst = normalizeLine(firstLine);
+  const bullets = bulletLineCount(lines);
+  const bulletRatio = lines.length ? bullets / lines.length : 0;
 
-  const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`
-    },
-    body: JSON.stringify({
-      model: "llama-3.3-70b-versatile",
-      temperature: 0.1,
-      response_format: { type: "json_object" },
-      messages: [
-        {
-          role: "system",
-          content: "Return valid JSON only."
-        },
-        {
-          role: "user",
-          content: prompt
-        }
-      ]
-    })
+  let score = 0;
+
+  if (!text) score += 10;
+  if (index === 0 && words < 40) score += 4;
+  if (index === 0 && titleLooksLikeDeckIntro(firstLine)) score += 4;
+  if (index === totalSlides - 1 && words < 40) score += 2;
+  if (lines.length <= 2 && words <= 16) score += 3;
+  if (uniqueWords <= 5 && words <= 12) score += 2;
+  if (isMetaHeading(firstLine)) score += 5;
+  if (isMostlyUppercase(firstLine) && words < 35) score += 1;
+  if (bulletRatio >= 0.75 && sentences <= 2) score += 2;
+  if (/section|part\s+\d+|module\s+\d+|chapter\s+\d+/i.test(normalizedFirst) && words <= 20) score += 3;
+  if (/thank you|questions\??|q&a|discussion/i.test(text.toLowerCase()) && words <= 30) score += 4;
+
+  return score;
+}
+
+function shouldDropSlide(slide, index, totalSlides) {
+  return metaScore(slide, index, totalSlides) >= 5;
+}
+
+function pickTitleAndBody(slide) {
+  const lines = (slide.lines || []).filter(Boolean);
+
+  if (!lines.length) {
+    return {
+      title: `Slide ${slide.source}`,
+      text: ""
+    };
+  }
+
+  let title = cleanText(lines[0]);
+  let bodyLines = lines.slice(1);
+
+  if (wordCount(title) > 14 && lines.length > 1) {
+    title = cleanText(lines[0].split(/[.:!?]\s+/)[0] || lines[0]);
+  }
+
+  const body = stripInlineNoise(bodyLines.join("\n"));
+  return {
+    title: stripInlineNoise(title),
+    text: body
+  };
+}
+
+function splitByPanelSignals(title, bodyText) {
+  const body = cleanText(bodyText);
+  if (!body) return [];
+
+  const normalized = body
+    .replace(/\bVS\b/gi, "\nVS\n")
+    .replace(/\|\s*/g, "\n")
+    .replace(/\bTOPIC\s+\d+\s*:/gi, "\nTOPIC:")
+    .replace(/\bStage\s+\d+\s+[—-]\s+/gi, "\nStage ")
+    .replace(/\bINPUTS\b/gi, "\nINPUTS\n")
+    .replace(/\bOUTPUTS\b/gi, "\nOUTPUTS\n")
+    .replace(/\n{3,}/g, "\n\n");
+
+  const blocks = normalized
+    .split(/\n(?=(?:TOPIC:|Stage\s+\d+|INPUTS|OUTPUTS|Chloroplasts\b|Chlorophyll\b))/)
+    .map((part) => cleanText(part))
+    .filter(Boolean);
+
+  if (blocks.length < 2 || blocks.length > 3) return [];
+
+  const goodBlocks = blocks.filter((part) => wordCount(part) >= 18);
+  if (goodBlocks.length < 2) return [];
+
+  return goodBlocks.map((part) => {
+    const firstLine = cleanText(part.split("\n")[0] || "");
+    const derivedTitle =
+      firstLine && wordCount(firstLine) <= 8 ? firstLine : title;
+
+    return {
+      title: derivedTitle || title,
+      text: part
+    };
   });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    throw new Error(`Groq error: ${errorText}`);
-  }
-
-  const data = await response.json();
-  const content = data?.choices?.[0]?.message?.content;
-
-  if (!content) {
-    throw new Error("Groq returned empty content.");
-  }
-
-  const parsed = JSON.parse(content);
-  return Array.isArray(parsed.segments) ? parsed.segments : [];
 }
 
-function normalizeAiSegments(aiSegments) {
-  const segments = [];
+function splitByTwoTopicPattern(title, bodyText) {
+  const body = cleanText(bodyText);
+  if (!body) return [];
+
+  const lines = body
+    .split(/\n+/)
+    .map((line) => cleanText(line))
+    .filter(Boolean);
+
+  const topicMarkers = lines.filter((line) =>
+    /^(topic\s*\d+\s*:|stage\s+\d+|part\s+\d+|section\s+\d+|inputs|outputs)/i.test(line)
+  );
+
+  if (topicMarkers.length < 2) return [];
+
+  return splitByPanelSignals(title, body);
+}
+
+function splitBodyIntoSubsegments(title, bodyText) {
+  const body = cleanText(bodyText);
+  if (!body) return [];
+
+  const panelSplit = splitByTwoTopicPattern(title, body);
+  if (panelSplit.length >= 2) return panelSplit.slice(0, 3);
+
+  const paragraphs = body
+    .split(/\n{2,}/)
+    .map((part) => cleanText(part))
+    .filter(Boolean);
+
+  if (paragraphs.length >= 2) {
+    const substantial = paragraphs.filter((part) => wordCount(part) >= 20);
+    if (substantial.length >= 2) {
+      return substantial.slice(0, 2).map((part) => ({
+        title,
+        text: part
+      }));
+    }
+  }
+
+  return [{ title, text: body }];
+}
+
+function buildSegments(slides) {
+  const kept = [];
   let segmentId = 1;
   let position = 1;
 
-  for (const item of aiSegments) {
-    const source = Number(item?.source);
-    const title = stripInlineSourceText(item?.title || "");
-    const text = stripInlineSourceText(item?.text || "");
+  for (let i = 0; i < slides.length; i += 1) {
+    const slide = slides[i];
 
-    if (!source || (!title && !text)) continue;
+    if (shouldDropSlide(slide, i, slides.length)) {
+      continue;
+    }
 
-    segments.push({
-      segmentId,
-      position,
-      source,
-      title,
-      text
-    });
+    const { title, text } = pickTitleAndBody(slide);
+    const bodyWords = wordCount(text);
+    const combinedWords = wordCount(`${title} ${text}`);
 
-    segmentId += 1;
-    position += 1;
+    if (combinedWords < 18) continue;
+    if (isMetaHeading(title) && bodyWords < 55) continue;
+
+    const parts = splitBodyIntoSubsegments(title, text)
+      .filter((part) => wordCount(`${part.title} ${part.text}`) >= 18)
+      .slice(0, 3);
+
+    for (const part of parts) {
+      kept.push({
+        segmentId,
+        position,
+        source: slide.source,
+        title: cleanText(part.title || `Slide ${slide.source}`),
+        text: cleanText(part.text || ""),
+        meta: false
+      });
+
+      segmentId += 1;
+      position += 1;
+    }
   }
 
-  return segments;
+  return kept;
+}
+
+function mergeWeakNeighbors(segments) {
+  if (!segments.length) return [];
+
+  const merged = [];
+  let buffer = null;
+
+  const flush = () => {
+    if (!buffer) return;
+    merged.push(buffer);
+    buffer = null;
+  };
+
+  for (const segment of segments) {
+    const bodyWords = wordCount(segment.text || "");
+    const weak = bodyWords < 22;
+
+    if (!buffer) {
+      buffer = { ...segment };
+      continue;
+    }
+
+    const sameSource = Number(buffer.source) === Number(segment.source);
+    const sameTitle =
+      normalizeLine(buffer.title || "") === normalizeLine(segment.title || "");
+
+    if (weak && sameSource && sameTitle) {
+      buffer.text = cleanText(`${buffer.text}\n\n${segment.text}`);
+      continue;
+    }
+
+    flush();
+    buffer = { ...segment };
+  }
+
+  flush();
+
+  return merged.map((segment, index) => ({
+    ...segment,
+    segmentId: index + 1,
+    position: index + 1
+  }));
 }
 
 exports.handler = async function (event) {
@@ -335,38 +489,13 @@ exports.handler = async function (event) {
 
     const documentTitle = filenameToTitle(fileName);
     const slides = buildSlideObjects(pages);
-
-    let segments;
-
-    try {
-      const aiSegments = await classifySlidesWithGroq(slides, documentTitle);
-      segments = normalizeAiSegments(aiSegments);
-
-      if (!segments.length) {
-        segments = fallbackSegments(slides);
-      }
-    } catch (aiError) {
-      segments = fallbackSegments(slides);
-
-      return {
-        statusCode: 200,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          debugVersion: "ai-deck-filter-v1-fallback",
-          warning: aiError.message,
-          document: {
-            title: documentTitle
-          },
-          segments
-        })
-      };
-    }
+    const segments = mergeWeakNeighbors(buildSegments(slides));
 
     return {
       statusCode: 200,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        debugVersion: "ai-deck-filter-v1",
+        debugVersion: "segment-v4-structural",
         document: {
           title: documentTitle
         },
@@ -378,7 +507,7 @@ exports.handler = async function (event) {
       statusCode: 500,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        error: "Failed to process PDF.",
+        error: "Failed to segment document.",
         details: error.message
       })
     };

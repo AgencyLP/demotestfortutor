@@ -26,11 +26,26 @@ function arrayBufferToBase64(buffer) {
   return btoa(binary);
 }
 
+async function postJson(url, payload) {
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(data.error || `Request failed: ${url}`);
+  }
+
+  return data;
+}
+
 uploadForm.addEventListener("submit", async (event) => {
   event.preventDefault();
 
   const file = pdfFileInput.files[0];
-
   if (!file) {
     setStatus("Please choose a PDF first.", true);
     return;
@@ -41,124 +56,91 @@ uploadForm.addEventListener("submit", async (event) => {
     return;
   }
 
-  setStatus("Running Steps 1 to 5...");
+  setStatus("Running ingestion pipeline...");
 
   try {
     const arrayBuffer = await file.arrayBuffer();
     const base64 = arrayBufferToBase64(arrayBuffer);
 
-    const segmentResponse = await fetch("/.netlify/functions/segment", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        fileName: file.name,
-        pdfBase64: base64
-      })
+    setStatus("Step 1/7: segmenting...");
+    const segmentData = await postJson("/.netlify/functions/segment", {
+      fileName: file.name,
+      pdfBase64: base64
     });
 
-    const segmentData = await segmentResponse.json();
-
-    if (!segmentResponse.ok) {
-      throw new Error(segmentData.error || "Step 1 failed.");
-    }
-
-    const conceptsResponse = await fetch("/.netlify/functions/concepts", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        document: segmentData.document,
-        segments: segmentData.segments
-      })
-    });
-
-    const conceptsData = await conceptsResponse.json();
-
-    if (!conceptsResponse.ok) {
-      throw new Error(conceptsData.error || "Step 2 failed.");
-    }
-
-    const matchResponse = await fetch("/.netlify/functions/match-concepts", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        document: segmentData.document,
-        segments: segmentData.segments,
-        concepts: conceptsData.concepts
-      })
-    });
-
-    const matchData = await matchResponse.json();
-
-    if (!matchResponse.ok) {
-      throw new Error(matchData.error || "Step 3 failed.");
-    }
-
-    const rolesResponse = await fetch("/.netlify/functions/roles", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        document: segmentData.document,
-        segments: matchData.segments
-      })
-    });
-
-    const rolesData = await rolesResponse.json();
-
-    if (!rolesResponse.ok) {
-      throw new Error(rolesData.error || "Step 4 failed.");
-    }
-
-    const dependenciesResponse = await fetch("/.netlify/functions/dependencies", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json"
-      },
-      body: JSON.stringify({
-        document: segmentData.document,
-        segments: rolesData.segments,
-        concepts: conceptsData.concepts
-      })
-    });
-
-    const dependenciesData = await dependenciesResponse.json();
-
-    if (!dependenciesResponse.ok) {
-      throw new Error(dependenciesData.error || "Step 5 failed.");
-    }
-
-    const combined = {
-      debugVersion: "lesson-map-v4",
+    setStatus("Step 2/7: extracting concepts...");
+    const conceptsData = await postJson("/.netlify/functions/concepts", {
       document: segmentData.document,
-      segments:
-        dependenciesData.segments ||
-        rolesData.segments ||
-        matchData.segments ||
-        segmentData.segments ||
-        [],
-      concepts: conceptsData.concepts || []
+      segments: segmentData.segments
+    });
+
+    setStatus("Step 3/7: matching concepts...");
+    const matchData = await postJson("/.netlify/functions/match-concepts", {
+      document: segmentData.document,
+      segments: segmentData.segments,
+      concepts: conceptsData.concepts
+    });
+
+    setStatus("Step 4/7: tagging roles...");
+    const rolesData = await postJson("/.netlify/functions/roles", {
+      document: segmentData.document,
+      segments: matchData.segments
+    });
+
+    setStatus("Step 5/7: checking dependencies...");
+    const dependenciesData = await postJson("/.netlify/functions/dependencies", {
+      document: segmentData.document,
+      segments: rolesData.segments,
+      concepts: conceptsData.concepts
+    });
+
+    setStatus("Step 6/7: resolving cross-concept relationships...");
+    const relationshipsData = await postJson("/.netlify/functions/chunk-relationships", {
+      document: segmentData.document,
+      segments: dependenciesData.segments,
+      concepts: conceptsData.concepts
+    });
+
+    setStatus("Step 7/7: assembling chunks...");
+    const chunksData = await postJson("/.netlify/functions/chunks", {
+      document: segmentData.document,
+      segments: relationshipsData.segments
+    });
+
+    const finalJson = {
+      debugVersion: "lesson-map-v7",
+      document: segmentData.document,
+      segments: relationshipsData.segments,
+      concepts: conceptsData.concepts,
+      chunks: chunksData.chunks
     };
 
-    if (segmentData.warning) combined.segmentWarning = segmentData.warning;
-    if (conceptsData.warning) combined.conceptWarning = conceptsData.warning;
-    if (matchData.warning) combined.matchWarning = matchData.warning;
-    if (rolesData.warning) combined.roleWarning = rolesData.warning;
-    if (dependenciesData.warning) combined.dependencyWarning = dependenciesData.warning;
+    const warnings = [
+      segmentData.warning,
+      conceptsData.warning,
+      matchData.warning,
+      rolesData.warning,
+      dependenciesData.warning,
+      relationshipsData.warning,
+      chunksData.warning,
+      ...(segmentData.warnings || []),
+      ...(conceptsData.warnings || []),
+      ...(matchData.warnings || []),
+      ...(rolesData.warnings || []),
+      ...(dependenciesData.warnings || []),
+      ...(relationshipsData.warnings || []),
+      ...(chunksData.warnings || [])
+    ].filter(Boolean);
 
-    renderJson(combined);
-    setStatus("Lesson map generated.");
+    if (warnings.length) {
+      finalJson.warnings = warnings;
+    }
+
+    renderJson(finalJson);
+    setStatus("Pipeline complete.");
   } catch (error) {
-    renderJson({
-      error: error.message || "Something went wrong."
-    });
-    setStatus("Something went wrong.", true);
+    renderJson({ error: error.message || "Something went wrong." });
+    setStatus("Pipeline failed.", true);
   }
 });
 
