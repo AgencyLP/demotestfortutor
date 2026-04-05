@@ -8,7 +8,7 @@ function cleanText(text) {
 }
 
 const PRIMARY_MODEL = process.env.GROQ_MODEL || "llama-3.1-8b-instant";
-const BACKUP_MODEL = process.env.GROQ_BACKUP_MODEL || "llama3-8b-8192";
+const BACKUP_MODEL = process.env.GROQ_BACKUP_MODEL || "llama-3.3-70b-versatile";
 const MAX_SEGMENT_TEXT = Number(process.env.LESSON_SEGMENT_TEXT_LIMIT || 450);
 
 function compactSegment(segment) {

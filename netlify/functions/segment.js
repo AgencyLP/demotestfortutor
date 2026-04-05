@@ -263,6 +263,59 @@ function shouldDropSlide(slide, index, totalSlides) {
   return metaScore(slide, index, totalSlides) >= 5;
 }
 
+function looksLikeContinuationLine(line) {
+  const text = cleanText(line);
+  if (!text) return false;
+
+  return (
+    /^[a-z0-9(]/.test(text) ||
+    /^[&/:,-]/.test(text) ||
+    text.length <= 20
+  );
+}
+
+function repairBrokenTitle(lines) {
+  if (!lines.length) {
+    return { title: "", consumedLines: 0 };
+  }
+
+  let title = cleanText(lines[0]);
+  let consumedLines = 1;
+
+  if (!title) {
+    return { title: "", consumedLines: 0 };
+  }
+
+  const titleEndsAbruptly =
+    /(?:&|and|of|for|to|with|vs\.?|versus|:|-|\/)$/i.test(title) ||
+    title.length < 18;
+
+  const nextLine = cleanText(lines[1] || "");
+
+  if (
+    nextLine &&
+    looksLikeContinuationLine(nextLine) &&
+    titleEndsAbruptly &&
+    wordCount(`${title} ${nextLine}`) <= 12
+  ) {
+    title = cleanText(`${title} ${nextLine}`);
+    consumedLines = 2;
+  }
+
+  return { title, consumedLines };
+}
+
+function normalizeDerivedTitle(candidate, fallbackTitle) {
+  const value = cleanText(candidate || "");
+  const fallback = cleanText(fallbackTitle || "");
+
+  if (!value) return fallback;
+  if (wordCount(value) > 12) return fallback;
+  if (/^(vs|versus|topic:|stage\s+\d+|inputs|outputs)$/i.test(value)) return fallback;
+
+  return value;
+}
+
 function pickTitleAndBody(slide) {
   const lines = (slide.lines || []).filter(Boolean);
 
@@ -273,11 +326,12 @@ function pickTitleAndBody(slide) {
     };
   }
 
-  let title = cleanText(lines[0]);
-  let bodyLines = lines.slice(1);
+  const repaired = repairBrokenTitle(lines);
+  let title = cleanText(repaired.title || lines[0]);
+  let bodyLines = lines.slice(repaired.consumedLines);
 
-  if (wordCount(title) > 14 && lines.length > 1) {
-    title = cleanText(lines[0].split(/[.:!?]\s+/)[0] || lines[0]);
+  if (wordCount(title) > 14 && lines.length > repaired.consumedLines) {
+    title = cleanText(title.split(/[.:!?]\s+/)[0] || title);
   }
 
   const body = stripInlineNoise(bodyLines.join("\n"));
@@ -301,19 +355,18 @@ function splitByPanelSignals(title, bodyText) {
     .replace(/\n{3,}/g, "\n\n");
 
   const blocks = normalized
-    .split(/\n(?=(?:TOPIC:|Stage\s+\d+|INPUTS|OUTPUTS|Chloroplasts\b|Chlorophyll\b))/)
+    .split(/\n(?=(?:TOPIC:|Stage\s+\d+|INPUTS|OUTPUTS))/)
     .map((part) => cleanText(part))
     .filter(Boolean);
 
-  if (blocks.length < 2 || blocks.length > 3) return [];
+  if (blocks.length < 2 || blocks.length > 4) return [];
 
   const goodBlocks = blocks.filter((part) => wordCount(part) >= 18);
   if (goodBlocks.length < 2) return [];
 
   return goodBlocks.map((part) => {
     const firstLine = cleanText(part.split("\n")[0] || "");
-    const derivedTitle =
-      firstLine && wordCount(firstLine) <= 8 ? firstLine : title;
+    const derivedTitle = normalizeDerivedTitle(firstLine, title);
 
     return {
       title: derivedTitle || title,
@@ -340,26 +393,40 @@ function splitByTwoTopicPattern(title, bodyText) {
   return splitByPanelSignals(title, body);
 }
 
+function shouldParagraphSplit(paragraphs) {
+  if (paragraphs.length < 2) return false;
+  const substantial = paragraphs.filter((part) => wordCount(part) >= 20);
+  if (substantial.length < 2) return false;
+
+  const firstTwo = substantial.slice(0, 2);
+  const startsDifferently = firstTwo.every((part) => {
+    const firstLine = cleanText(part.split("\n")[0] || "");
+    return firstLine && wordCount(firstLine) <= 10;
+  });
+
+  return startsDifferently;
+}
+
 function splitBodyIntoSubsegments(title, bodyText) {
   const body = cleanText(bodyText);
   if (!body) return [];
 
   const panelSplit = splitByTwoTopicPattern(title, body);
-  if (panelSplit.length >= 2) return panelSplit.slice(0, 3);
+  if (panelSplit.length >= 2) return panelSplit.slice(0, 4);
 
   const paragraphs = body
     .split(/\n{2,}/)
     .map((part) => cleanText(part))
     .filter(Boolean);
 
-  if (paragraphs.length >= 2) {
-    const substantial = paragraphs.filter((part) => wordCount(part) >= 20);
-    if (substantial.length >= 2) {
-      return substantial.slice(0, 2).map((part) => ({
+  if (shouldParagraphSplit(paragraphs)) {
+    return paragraphs
+      .filter((part) => wordCount(part) >= 20)
+      .slice(0, 2)
+      .map((part) => ({
         title,
         text: part
       }));
-    }
   }
 
   return [{ title, text: body }];
@@ -386,7 +453,7 @@ function buildSegments(slides) {
 
     const parts = splitBodyIntoSubsegments(title, text)
       .filter((part) => wordCount(`${part.title} ${part.text}`) >= 18)
-      .slice(0, 3);
+      .slice(0, 4);
 
     for (const part of parts) {
       kept.push({
@@ -495,7 +562,7 @@ exports.handler = async function (event) {
       statusCode: 200,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        debugVersion: "segment-v4-structural",
+        debugVersion: "segment-v5-structural",
         document: {
           title: documentTitle
         },

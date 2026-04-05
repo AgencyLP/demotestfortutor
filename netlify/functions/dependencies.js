@@ -7,53 +7,10 @@ function cleanText(text) {
     .trim();
 }
 
-const PRIMARY_MODEL = process.env.GROQ_MODEL || "llama-3.1-8b-instant";
-const BACKUP_MODEL = process.env.GROQ_BACKUP_MODEL || "llama3-8b-8192";
-const MAX_SEGMENT_TEXT = Number(process.env.LESSON_SEGMENT_TEXT_LIMIT || 400);
-
-function compactSegment(segment) {
-  return {
-    segmentId: Number(segment.segmentId),
-    position: Number(segment.position),
-    title: cleanText(segment.title || ""),
-    text: cleanText(segment.text || "").slice(0, MAX_SEGMENT_TEXT),
-    concept: cleanText(segment.concept || ""),
-    role: cleanText(segment.role || "")
-  };
-}
-
-function normalizeMatchedDependencies(aiSegments, originalSegments) {
-  const originalById = new Map(
-    originalSegments.map((segment) => [Number(segment.segmentId), segment])
+function uniqueSortedNumbers(values) {
+  return [...new Set(values.map((v) => Number(v)).filter((v) => Number.isInteger(v) && v > 0))].sort(
+    (a, b) => a - b
   );
-  const normalizedById = new Map();
-
-  for (const item of aiSegments || []) {
-    const segmentId = Number(item?.segmentId);
-    const original = originalById.get(segmentId);
-    if (!original) continue;
-
-    let dependsOn = Array.isArray(item?.dependsOn) ? item.dependsOn : [];
-    dependsOn = dependsOn
-      .map((value) => Number(value))
-      .filter((value) => Number.isInteger(value) && value > 0)
-      .filter((value) => value < segmentId);
-
-    normalizedById.set(segmentId, {
-      ...original,
-      dependsOn: [...new Set(dependsOn)].sort((a, b) => a - b)
-    });
-  }
-
-  return originalSegments.map((segment, index) => {
-    const found = normalizedById.get(segment.segmentId);
-    if (found) return found;
-
-    return {
-      ...segment,
-      dependsOn: inferDependencyForSegment(originalSegments, index)
-    };
-  });
 }
 
 function inferDependencyForSegment(segments, index) {
@@ -62,100 +19,109 @@ function inferDependencyForSegment(segments, index) {
 
   const role = cleanText(segment.role || "");
   const concept = cleanText(segment.concept || "");
+  const title = cleanText(segment.title || "").toLowerCase();
+  const text = cleanText(segment.text || "").toLowerCase();
 
-  if (role === "Introduction" || role === "Definition") return [];
+  const previousSegments = segments.slice(0, index);
 
-  const prevSameConcept = [...segments]
-    .slice(0, index)
+  const prevSameConcept = [...previousSegments]
     .reverse()
-    .find((item) => cleanText(item.concept || "") === concept);
+    .find((s) => cleanText(s.concept || "") === concept);
+
+  const prevDefinitionOrIntro = [...previousSegments]
+    .reverse()
+    .find((s) => {
+      const r = cleanText(s.role || "");
+      return r === "Definition" || r === "Introduction";
+    });
+
+  const prevExplanation = [...previousSegments]
+    .reverse()
+    .find((s) => cleanText(s.role || "") === "Explanation");
+
+  const prevCore = prevSameConcept || prevDefinitionOrIntro || prevExplanation;
+
+  if (role === "Introduction" || role === "Definition") {
+    return [];
+  }
 
   if (role === "Example" || role === "Application" || role === "Summary") {
-    if (prevSameConcept) return [prevSameConcept.segmentId];
+    if (prevCore) return [prevCore.segmentId];
+    return [segments[index - 1].segmentId];
   }
 
   if (role === "Comparison") {
-    const recent = segments
-      .slice(Math.max(0, index - 2), index)
-      .map((item) => item.segmentId);
-    return [...new Set(recent)];
+    const deps = [];
+
+    if (prevSameConcept) deps.push(prevSameConcept.segmentId);
+    if (prevDefinitionOrIntro) deps.push(prevDefinitionOrIntro.segmentId);
+    if (!deps.length && prevExplanation) deps.push(prevExplanation.segmentId);
+    if (!deps.length) deps.push(segments[index - 1].segmentId);
+
+    return uniqueSortedNumbers(deps);
   }
 
-  if (prevSameConcept) return [prevSameConcept.segmentId];
+  if (/^bridge\b/.test(title) || /connecting the pieces|all connected|link|bridge/.test(text)) {
+    const deps = [];
+
+    if (prevSameConcept) deps.push(prevSameConcept.segmentId);
+
+    const recentSupport = previousSegments
+      .filter((s) => cleanText(s.role || "") === "Comparison" || cleanText(s.concept || "") !== concept)
+      .slice(-2)
+      .map((s) => s.segmentId);
+
+    deps.push(...recentSupport);
+
+    if (!deps.length && prevDefinitionOrIntro) deps.push(prevDefinitionOrIntro.segmentId);
+    if (!deps.length && prevExplanation) deps.push(prevExplanation.segmentId);
+    if (!deps.length) deps.push(segments[index - 1].segmentId);
+
+    return uniqueSortedNumbers(deps);
+  }
+
+  if (/^level up\b/.test(title) || /advanced|deeper|stage 1|stage 2|two linked stages|calvin cycle|light-dependent/.test(text)) {
+    const deps = [];
+
+    if (prevSameConcept) deps.push(prevSameConcept.segmentId);
+
+    const recentBridgeOrSupport = previousSegments
+      .filter((s) => {
+        const rel = cleanText(s.relationshipType || "");
+        return rel === "bridge" || cleanText(s.concept || "") !== concept;
+      })
+      .slice(-2)
+      .map((s) => s.segmentId);
+
+    deps.push(...recentBridgeOrSupport);
+
+    if (!deps.length && prevDefinitionOrIntro) deps.push(prevDefinitionOrIntro.segmentId);
+    if (!deps.length && prevExplanation) deps.push(prevExplanation.segmentId);
+    if (!deps.length) deps.push(segments[index - 1].segmentId);
+
+    return uniqueSortedNumbers(deps);
+  }
+
+  if (prevSameConcept) {
+    return [prevSameConcept.segmentId];
+  }
+
+  if (prevDefinitionOrIntro) {
+    return [prevDefinitionOrIntro.segmentId];
+  }
+
+  if (prevExplanation) {
+    return [prevExplanation.segmentId];
+  }
 
   return [segments[index - 1].segmentId];
 }
 
-function fallbackDependencies(segments) {
+function inferDependencies(segments) {
   return segments.map((segment, index) => ({
     ...segment,
     dependsOn: inferDependencyForSegment(segments, index)
   }));
-}
-
-function buildPrompt(documentTitle, segments, concepts) {
-  return [
-    "You are helping with STEP 5 ONLY of a demo lesson-ingestion pipeline.",
-    "Task: decide which earlier segments each segment depends on.",
-    "Return valid JSON only.",
-    "",
-    "Rules:",
-    "- Use only earlier segmentIds, never later ones.",
-    "- Return only direct, necessary dependencies.",
-    "- Keep dependency lists small.",
-    "- Introduction and Definition often have no dependency.",
-    "- Explanation often depends on an earlier Introduction or Definition.",
-    "- Example often depends on the thing being explained first.",
-    "- Summary often depends on earlier segments.",
-    "- Do not invent segmentIds.",
-    "",
-    'Return JSON in this exact shape:',
-    '{',
-    '  "segments": [',
-    '    { "segmentId": 1, "dependsOn": [] }',
-    '  ]',
-    '}',
-    "",
-    `Document title: ${documentTitle}`,
-    `Concepts: ${JSON.stringify((concepts || []).map((c) => ({ name: cleanText(c.name || "") })))}`,
-    `Segments: ${JSON.stringify(segments.map(compactSegment))}`
-  ].join("\n");
-}
-
-async function callGroq(model, prompt) {
-  const apiKey = process.env.GROQ_KEY;
-  if (!apiKey) throw new Error("Missing GROQ_KEY environment variable.");
-
-  const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`
-    },
-    body: JSON.stringify({
-      model,
-      temperature: 0.1,
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: "Return valid JSON only." },
-        { role: "user", content: prompt }
-      ]
-    })
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    const error = new Error(`Groq error (${model}): ${errorText}`);
-    error.statusCode = response.status;
-    throw error;
-  }
-
-  const data = await response.json();
-  const content = data?.choices?.[0]?.message?.content;
-  if (!content) throw new Error(`Groq returned empty content for ${model}.`);
-
-  const parsed = JSON.parse(content);
-  return Array.isArray(parsed.segments) ? parsed.segments : [];
 }
 
 exports.handler = async function (event) {
@@ -171,7 +137,6 @@ exports.handler = async function (event) {
     const body = JSON.parse(event.body || "{}");
     const document = body.document || {};
     const segments = Array.isArray(body.segments) ? body.segments : [];
-    const concepts = Array.isArray(body.concepts) ? body.concepts : [];
 
     if (!segments.length) {
       return {
@@ -181,48 +146,18 @@ exports.handler = async function (event) {
       };
     }
 
-    const documentTitle = cleanText(document.title || "Untitled Document");
-    const prompt = buildPrompt(documentTitle, segments, concepts);
-    const warnings = [];
-
-    for (const model of [PRIMARY_MODEL, BACKUP_MODEL]) {
-      try {
-        const aiSegments = await callGroq(model, prompt);
-        const matchedSegments = normalizeMatchedDependencies(aiSegments, segments);
-
-        return {
-          statusCode: 200,
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            debugVersion: "dependencies-v2",
-            document: { title: documentTitle },
-            model,
-            warnings,
-            segments: matchedSegments
-          })
-        };
-      } catch (error) {
-        warnings.push(error.message);
-
-        const isRateLimited =
-          error.statusCode === 429 ||
-          /rate limit|tokens per day|rate_limit_exceeded/i.test(error.message);
-
-        if (!isRateLimited) break;
-      }
-    }
-
-    const matchedSegments = fallbackDependencies(segments);
+    const enrichedSegments = inferDependencies(segments);
 
     return {
       statusCode: 200,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        debugVersion: "dependencies-v2-fallback",
-        document: { title: documentTitle },
-        warning: "Used fallback dependency tagging.",
-        warnings,
-        segments: matchedSegments
+        debugVersion: "dependencies-v4-heuristic",
+        document: {
+          title: cleanText(document.title || "Untitled Document")
+        },
+        warning: "Used deterministic dependency inference to save tokens.",
+        segments: enrichedSegments
       })
     };
   } catch (error) {
@@ -230,7 +165,7 @@ exports.handler = async function (event) {
       statusCode: 500,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        error: "Failed to assign dependencies.",
+        error: "Failed to determine dependencies.",
         details: error.message
       })
     };

@@ -40,44 +40,113 @@ function buildConceptText(concept) {
 }
 
 function scoreConceptAgainstSegment(segment, concept) {
-  return overlapScore(
-    `${segment.title}\n${segment.text}`,
-    buildConceptText(concept)
-  );
-}
+  const segmentText = `${cleanText(segment.title || "")}\n${cleanText(segment.text || "")}`;
+  const conceptText = buildConceptText(concept);
+  let score = overlapScore(segmentText, conceptText);
 
-function hasBridgeSignal(segment) {
-  return /relationship|interaction|between|link|connect|bridge|connecting|versus|vs\.?|compare/i.test(
-    `${segment.title}\n${segment.text}`
-  );
-}
-
-function inferRelationshipType(segment, secondaryConcept, segmentsById) {
   const title = cleanText(segment.title || "").toLowerCase();
-  const role = cleanText(segment.role || "");
+  const conceptName = cleanText(concept.name || "").toLowerCase();
+
+  if (title && conceptName) {
+    if (title === conceptName) score += 1.0;
+    else if (title.includes(conceptName) || conceptName.includes(title)) score += 0.45;
+  }
+
+  return score;
+}
+
+function getBestSecondaryConcept(segment, concepts, mainConcept) {
+  const scored = concepts
+    .map((concept) => ({
+      name: cleanText(concept.name || ""),
+      score: scoreConceptAgainstSegment(segment, concept)
+    }))
+    .filter((item) => item.name && item.name !== mainConcept)
+    .sort((a, b) => b.score - a.score);
+
+  const best = scored[0];
+  if (!best) return "";
+
+  return best.score >= 0.42 ? best.name : "";
+}
+
+function hasBridgeSignal(title, text) {
+  const value = `${title}\n${text}`.toLowerCase();
+
+  return (
+    /^bridge\b/.test(title.toLowerCase()) ||
+    /connecting the pieces|all connected|how .* connected|connection between|link between/.test(value)
+  );
+}
+
+function hasLevelUpSignal(title, text) {
+  const value = `${title}\n${text}`.toLowerCase();
+
+  return (
+    /^level up\b/.test(title.toLowerCase()) ||
+    /advanced|deeper|further|extension|two stages|stage 1|stage 2|light-dependent|calvin cycle/.test(value)
+  );
+}
+
+function isQuickReminder(segment, secondaryConcept, segmentsById) {
   const deps = Array.isArray(segment.dependsOn) ? segment.dependsOn : [];
 
-  if (hasBridgeSignal(segment) || role === "Comparison") {
-    return "bridge";
+  return deps.some((id) => {
+    const depSeg = segmentsById.get(Number(id));
+    return depSeg && cleanText(depSeg.concept || "") === secondaryConcept;
+  });
+}
+
+function inferRelationship(segment, secondaryConcept, segmentsById) {
+  const title = cleanText(segment.title || "");
+  const text = cleanText(segment.text || "");
+  const role = cleanText(segment.role || "");
+  const mainConcept = cleanText(segment.concept || "");
+
+  if (!mainConcept || !secondaryConcept || mainConcept === secondaryConcept) {
+    return { relationshipType: "none" };
   }
 
-  if (
-    /level\s+up|advanced|deeper|further|extension|stages?/i.test(title) ||
-    role === "Application"
-  ) {
-    return "level-up";
+  if (hasLevelUpSignal(title, text)) {
+    return {
+      relationshipType: "level-up",
+      secondaryConcept
+    };
   }
 
-  if (
-    deps.some((id) => {
-      const depSeg = segmentsById.get(id);
-      return depSeg && cleanText(depSeg.concept || "") === secondaryConcept;
-    })
-  ) {
-    return "quick-reminder";
+  if (hasBridgeSignal(title, text)) {
+    return {
+      relationshipType: "bridge",
+      secondaryConcept
+    };
   }
 
-  return "none";
+  if (role === "Comparison") {
+    return {
+      relationshipType: "bridge",
+      secondaryConcept
+    };
+  }
+
+  if (isQuickReminder(segment, secondaryConcept, segmentsById)) {
+    return {
+      relationshipType: "quick-reminder",
+      secondaryConcept
+    };
+  }
+
+  return { relationshipType: "none" };
+}
+
+function detectMixedTopicSegment(segment) {
+  const title = cleanText(segment.title || "").toLowerCase();
+  const text = cleanText(segment.text || "").toLowerCase();
+
+  if (/^two topics\b/.test(title)) return true;
+  if (/\btopic 1\b/.test(text) && /\btopic 2\b/.test(text)) return true;
+  if (/\bseed dispersal\b/.test(text) && /\bphotosynthesis\b/.test(text)) return true;
+
+  return false;
 }
 
 exports.handler = async function (event) {
@@ -115,6 +184,8 @@ exports.handler = async function (event) {
       segments.map((segment) => [Number(segment.segmentId), segment])
     );
 
+    const warnings = [];
+
     const enrichedSegments = segments.map((segment) => {
       const mainConcept = cleanText(segment.concept || "");
       const role = cleanText(segment.role || "");
@@ -126,17 +197,19 @@ exports.handler = async function (event) {
         };
       }
 
-      const scored = concepts
-        .map((concept) => ({
-          name: cleanText(concept.name || ""),
-          score: scoreConceptAgainstSegment(segment, concept)
-        }))
-        .filter((item) => item.name && item.name !== mainConcept)
-        .sort((a, b) => b.score - a.score);
+      if (detectMixedTopicSegment(segment)) {
+        warnings.push(
+          `Segment ${segment.segmentId} appears to contain multiple competing topics.`
+        );
 
-      const bestSecondary = scored[0];
-      const secondaryConcept =
-        bestSecondary && bestSecondary.score >= 0.34 ? bestSecondary.name : "";
+        return {
+          ...segment,
+          relationshipType: "none",
+          mixedTopic: true
+        };
+      }
+
+      const secondaryConcept = getBestSecondaryConcept(segment, concepts, mainConcept);
 
       if (!secondaryConcept) {
         return {
@@ -145,13 +218,13 @@ exports.handler = async function (event) {
         };
       }
 
-      const relationshipType = inferRelationshipType(
+      const relationship = inferRelationship(
         segment,
         secondaryConcept,
         segmentsById
       );
 
-      if (relationshipType === "none") {
+      if (relationship.relationshipType === "none") {
         return {
           ...segment,
           relationshipType: "none"
@@ -160,8 +233,8 @@ exports.handler = async function (event) {
 
       return {
         ...segment,
-        secondaryConcept,
-        relationshipType
+        secondaryConcept: relationship.secondaryConcept,
+        relationshipType: relationship.relationshipType
       };
     });
 
@@ -169,10 +242,11 @@ exports.handler = async function (event) {
       statusCode: 200,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        debugVersion: "chunk-relationships-v3-fixed",
+        debugVersion: "chunk-relationships-v4-fixed",
         document: {
           title: cleanText(document.title || "Untitled Document")
         },
+        warnings,
         segments: enrichedSegments
       })
     };

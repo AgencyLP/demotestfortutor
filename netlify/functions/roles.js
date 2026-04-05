@@ -18,7 +18,7 @@ const ALLOWED_ROLES = [
 ];
 
 const PRIMARY_MODEL = process.env.GROQ_MODEL || "llama-3.1-8b-instant";
-const BACKUP_MODEL = process.env.GROQ_BACKUP_MODEL || "llama3-8b-8192";
+const BACKUP_MODEL = process.env.GROQ_BACKUP_MODEL || "llama-3.3-70b-versatile";
 const MAX_SEGMENT_TEXT = Number(process.env.LESSON_SEGMENT_TEXT_LIMIT || 450);
 
 function compactSegment(segment) {
@@ -35,25 +35,43 @@ function inferRole(segment, index, total) {
   const title = cleanText(segment.title || "");
   const text = cleanText(segment.text || "");
   const combined = `${title}\n${text}`;
+  const lowerTitle = title.toLowerCase();
+  const lowerCombined = combined.toLowerCase();
 
-  if (index === 0) return "Introduction";
-  if (index === total - 1 && /summary|conclusion|wrap.?up|takeaway/i.test(combined)) {
-    return "Summary";
-  }
-  if (/what is|defined as|definition|refers to|means\b/i.test(combined)) {
+  if (
+    /what is|defined as|definition|refers to|means\b/.test(lowerCombined) ||
+    /^what is\b/.test(lowerTitle)
+  ) {
     return "Definition";
   }
-  if (/for example|for instance|such as|case study|e\.g\./i.test(combined)) {
-    return "Example";
-  }
-  if (/compare|versus|vs\.|difference|similarit/i.test(combined)) {
+
+  if (
+    /compare|comparison|versus|vs\.?|difference|not the same|here'?s the difference|similarit/.test(lowerCombined)
+  ) {
     return "Comparison";
   }
-  if (/application|in practice|used to|used in|real world|practical/i.test(combined)) {
+
+  if (
+    /for example|for instance|such as|e\.g\.|examples?\b/.test(lowerCombined)
+  ) {
+    return "Example";
+  }
+
+  if (
+    /application|in practice|real world|used in practice|practical/.test(lowerCombined)
+  ) {
     return "Application";
   }
-  if (/summary|conclusion|recap|overall|legacy|impact/i.test(combined)) {
+
+  if (
+    /summary|conclusion|recap|overall|takeaway|wrap.?up/.test(lowerCombined) ||
+    (index === total - 1 && /summary|conclusion|recap|overall|takeaway|wrap.?up/.test(lowerCombined))
+  ) {
     return "Summary";
+  }
+
+  if (index === 0) {
+    return "Introduction";
   }
 
   return "Explanation";
@@ -78,11 +96,11 @@ function normalizeMatchedRoles(aiSegments, originalSegments) {
 
   return originalSegments.map((segment, index) => {
     const found = matchedById.get(segment.segmentId);
-    if (found) return found;
+    const base = found || segment;
 
     return {
-      ...segment,
-      role: inferRole(segment, index, originalSegments.length)
+      ...base,
+      role: inferRole(base, index, originalSegments.length)
     };
   });
 }
@@ -107,6 +125,9 @@ function buildPrompt(documentTitle, segments) {
     "- Choose one main role only.",
     "- Use only the allowed role list.",
     "- Keep the original segmentId.",
+    "- A 'What is ...' slide is usually Definition, even if it is early in the lesson.",
+    "- A side-by-side distinction slide is usually Comparison.",
+    "- A bridge or advanced slide is usually Explanation unless it truly fits another role better.",
     "",
     'Return JSON in this exact shape:',
     '{',
@@ -191,7 +212,7 @@ exports.handler = async function (event) {
           statusCode: 200,
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            debugVersion: "roles-v2",
+            debugVersion: "roles-v4",
             document: { title: documentTitle },
             model,
             warnings,
@@ -215,7 +236,7 @@ exports.handler = async function (event) {
       statusCode: 200,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        debugVersion: "roles-v2-fallback",
+        debugVersion: "roles-v4-fallback",
         document: { title: documentTitle },
         warning: "Used fallback role tagging.",
         warnings,

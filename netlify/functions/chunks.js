@@ -21,6 +21,7 @@ function buildChunkTitle(mainConcept, chunkType, segments, secondaryConcept) {
   }
 
   if (chunkType === "level-up") {
+    if (firstTitle) return firstTitle;
     return `${mainConcept}: advanced`;
   }
 
@@ -45,20 +46,23 @@ function shouldBreak(prev, next, currentGroup) {
   const nextConcept = cleanText(next.concept || "");
   const prevRel = cleanText(prev.relationshipType || "none");
   const nextRel = cleanText(next.relationshipType || "none");
+  const nextMixed = Boolean(next.mixedTopic);
 
-  if (nextRel === "bridge" || prevRel === "bridge") return true;
-  if (nextRel === "level-up") return true;
+  if (nextMixed) return true;
+  if (prevRel === "bridge" || nextRel === "bridge") return true;
+  if (prevRel === "level-up" || nextRel === "level-up") return true;
+  if (nextRel === "quick-reminder") return true;
   if (prevConcept !== nextConcept) return true;
   if (currentGroup.length >= 3) return true;
-  if (cleanText(next.role || "") === "Introduction" && currentGroup.length > 0) return true;
 
   return false;
 }
 
 function assembleChunks(segments) {
-  if (!segments.length) return [];
+  if (!segments.length) return { chunks: [], warnings: [] };
 
   const groups = [];
+  const warnings = [];
   let current = [segments[0]];
 
   for (let i = 1; i < segments.length; i += 1) {
@@ -99,8 +103,17 @@ function assembleChunks(segments) {
         .map((segment) => Number(segment.segmentId));
 
       if (priorSecondary.length) {
-        dependsOn = uniq([...dependsOn, priorSecondary[priorSecondary.length - 1]]).sort((a, b) => a - b);
+        dependsOn = uniq([
+          ...dependsOn,
+          priorSecondary[priorSecondary.length - 1]
+        ]).sort((a, b) => a - b);
       }
+    }
+
+    if (first.mixedTopic) {
+      warnings.push(
+        `Segment ${first.segmentId} looked mixed-topic, so it was isolated as its own chunk.`
+      );
     }
 
     chunks.push({
@@ -114,7 +127,7 @@ function assembleChunks(segments) {
     });
   }
 
-  return chunks;
+  return { chunks, warnings };
 }
 
 exports.handler = async function (event) {
@@ -139,17 +152,18 @@ exports.handler = async function (event) {
       };
     }
 
-    const chunks = assembleChunks(segments);
+    const result = assembleChunks(segments);
 
     return {
       statusCode: 200,
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        debugVersion: "chunks-v4-fixed",
+        debugVersion: "chunks-v5-fixed",
         document: {
           title: cleanText(document.title || "Untitled Document")
         },
-        chunks
+        warnings: result.warnings,
+        chunks: result.chunks
       })
     };
   } catch (error) {
