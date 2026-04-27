@@ -21,6 +21,35 @@
       <div id="status" class="status" aria-live="polite"></div>
     </section>
 
+    <section id="teachPlanCard" class="card hidden">
+      <h2>Teach Plan</h2>
+      <p class="subtitle">Choose one chunk and generate a small teaching plan.</p>
+
+      <div class="teach-controls">
+        <label for="chunkSelect" class="file-label">Chunk</label>
+        <select id="chunkSelect"></select>
+        <button id="teachPlanBtn" type="button">Generate Teach Plan</button>
+      </div>
+
+      <pre id="teachPlanOutput" class="json-output small-output">{
+  "message": "Generate a lesson map first, then choose one chunk."
+}</pre>
+
+      <div id="teachingDemo" class="teaching-demo hidden">
+        <div class="output-header">
+          <h2>Teaching Demo</h2>
+          <button id="startTeachingBtn" type="button" class="secondary-btn">Start Lesson</button>
+        </div>
+
+        <div id="conversation" class="conversation" aria-live="polite"></div>
+
+        <div class="answer-row">
+          <textarea id="learnerAnswer" rows="3" placeholder="Type a learner answer..."></textarea>
+          <button id="sendAnswerBtn" type="button">Send Answer</button>
+        </div>
+      </div>
+    </section>
+
     <section class="card">
       <div class="output-header">
         <h2>JSON Output</h2>

@@ -2,6 +2,7 @@ const pdfParse = require("pdf-parse");
 
 function cleanText(text) {
   return String(text || "")
+    .normalize("NFKC")
     .replace(/\r/g, "\n")
     .replace(/\u00A0/g, " ")
     .replace(/[ \t]+/g, " ")
@@ -94,6 +95,63 @@ function looksLikeBrandingLine(line) {
   return genericBrandSignals.some((pattern) => pattern.test(text));
 }
 
+function hasUsefulLatinOrNumber(text) {
+  return /[A-Za-z0-9]/.test(String(text || ""));
+}
+
+function looksLikeUnreadableSymbolLine(line) {
+  const compact = cleanText(line).replace(/\s/g, "");
+  if (!compact) return true;
+  if (/[A-Za-z0-9]/.test(compact)) return false;
+  if (compact.length <= 8) return true;
+
+  const symbolCount = (compact.match(/[^\p{L}\p{N}]/gu) || []).length;
+  return symbolCount / compact.length >= 0.6;
+}
+
+function looksLikeFontEncodingArtifact(line) {
+  const text = cleanText(line);
+  if (!text) return true;
+
+  const compact = text.replace(/\s/g, "");
+  if (!compact) return true;
+
+  const latinOrNumberCount = (compact.match(/[A-Za-z0-9]/g) || []).length;
+  const cjkCount = (compact.match(/[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/g) || []).length;
+  const symbolCount = (compact.match(/[=+\-*/×÷%()[\]{}<>]/g) || []).length;
+  const readableWords = (text.match(/[A-Za-z]{3,}/g) || []).length;
+
+  if (cjkCount >= 3 && latinOrNumberCount === 0) return true;
+  if (cjkCount >= 3 && symbolCount > 0 && cjkCount > latinOrNumberCount) return true;
+  if (cjkCount >= 2 && readableWords === 0 && cjkCount >= latinOrNumberCount) return true;
+
+  return false;
+}
+
+function stripFormulaFontArtifacts(line) {
+  const text = cleanText(line);
+  const cjkPattern = /[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]+/g;
+  const cjkCount = (text.match(cjkPattern) || []).length;
+
+  if (cjkCount >= 1) {
+    const withoutArtifacts = cleanText(text.replace(cjkPattern, " "));
+    const readableWords = (withoutArtifacts.match(/[A-Za-z]{3,}/g) || []).length;
+
+    if (!withoutArtifacts || readableWords === 0) return "";
+    return withoutArtifacts;
+  }
+
+  return text;
+}
+
+function looksLikeBrokenFormulaFragment(line) {
+  const text = cleanText(line);
+  if (!text) return true;
+  if (/^[′'`´’]+$/.test(text)) return true;
+  if (/[×÷=]/.test(text) && wordCount(text) <= 3 && !/\d/.test(text)) return true;
+  return false;
+}
+
 function stripInlineNoise(text) {
   return cleanText(
     String(text || "")
@@ -102,6 +160,7 @@ function stripInlineNoise(text) {
       .replace(/https?:\/\/\S+/gi, "")
       .replace(/\bwww\.\S+/gi, "")
       .replace(/[⚡☀️🌬️🌱🍃🍬💧💨🔬🔄]+/g, " ")
+      .replace(/[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]+/g, " ")
       .replace(/\b[a-f0-9]{4,}(?:\s*-\s*[a-f0-9]{4,})+\b/gi, " ")
       .replace(/\b[a-z]*\d+[a-z\d-]*\b/gi, (match) => {
         const hasLetters = /[a-z]/i.test(match);
@@ -146,6 +205,9 @@ function removeSlideFurniture(lines) {
   return lines.filter((line, index, arr) => {
     const normalized = normalizeLine(line);
     if (!normalized) return false;
+    if (looksLikeUnreadableSymbolLine(line)) return false;
+    if (!hasUsefulLatinOrNumber(line) && looksLikeFontEncodingArtifact(line)) return false;
+    if (looksLikeFontEncodingArtifact(line)) return false;
     if (looksLikeBrandingLine(line)) return false;
     if (looksLikePageMarker(line)) return false;
     if (looksLikeCitationOrSourceLine(line)) return false;
@@ -167,7 +229,8 @@ function buildSlideObjects(pages) {
       const cleanedText = stripInlineNoise(cleanedLines.join("\n"));
       const lines = cleanedText
         .split(/\n+/)
-        .map((line) => cleanText(line))
+        .map((line) => stripFormulaFontArtifacts(line))
+        .filter((line) => !looksLikeBrokenFormulaFragment(line))
         .filter(Boolean);
 
       return {
@@ -221,6 +284,29 @@ function bulletLineCount(lines) {
   }).length;
 }
 
+function numberedTopicLineCount(lines) {
+  return lines.filter((line) => {
+    const text = cleanText(line);
+    if (!/^\d+[.)-]\s+/.test(text)) return false;
+    return wordCount(text.replace(/^\d+[.)-]\s+/, "")) <= 8;
+  }).length;
+}
+
+function looksLikeTopicListSlide(lines, index) {
+  if (!lines.length) return false;
+
+  const numberedTopics = numberedTopicLineCount(lines);
+  const bullets = bulletLineCount(lines);
+  const shortLines = lines.filter((line) => wordCount(line) <= 8).length;
+  const listLikeCount = Math.max(numberedTopics, bullets);
+  const shortLineRatio = shortLines / lines.length;
+
+  if (listLikeCount >= 4 && shortLineRatio >= 0.7) return true;
+  if (index === 0 && listLikeCount >= 3 && shortLineRatio >= 0.65) return true;
+
+  return false;
+}
+
 function titleLooksLikeDeckIntro(title) {
   const value = normalizeLine(title);
   return (
@@ -252,6 +338,7 @@ function metaScore(slide, index, totalSlides) {
   if (uniqueWords <= 5 && words <= 12) score += 2;
   if (isMetaHeading(firstLine)) score += 5;
   if (isMostlyUppercase(firstLine) && words < 35) score += 1;
+  if (looksLikeTopicListSlide(lines, index)) score += 4;
   if (bulletRatio >= 0.75 && sentences <= 2) score += 2;
   if (/section|part\s+\d+|module\s+\d+|chapter\s+\d+/i.test(normalizedFirst) && words <= 20) score += 3;
   if (/thank you|questions\??|q&a|discussion/i.test(text.toLowerCase()) && words <= 30) score += 4;

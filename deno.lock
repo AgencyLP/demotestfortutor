@@ -12,7 +12,9 @@
     "packageJson": {
       "dependencies": [
         "npm:netlify-cli@^24.9.0",
-        "npm:pdf-parse@^1.1.1"
+        "npm:npm@^11.13.0",
+        "npm:pdf-parse@^1.1.1",
+        "npm:start@^5.1.0"
       ]
     }
   }

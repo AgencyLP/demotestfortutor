@@ -84,7 +84,8 @@ function hasLevelUpSignal(title, text) {
 
   return (
     /^level up\b/.test(title.toLowerCase()) ||
-    /advanced|deeper|further|extension|two stages|stage 1|stage 2|light-dependent|calvin cycle/.test(value)
+    /\b(advanced|deeper|further|extension|beyond the basics|next level|edge case|edge cases)\b/.test(value) ||
+    /\b(stage|step|phase|part)\s+\d+\b/.test(value)
   );
 }
 
@@ -103,22 +104,26 @@ function inferRelationship(segment, secondaryConcept, segmentsById) {
   const role = cleanText(segment.role || "");
   const mainConcept = cleanText(segment.concept || "");
 
-  if (!mainConcept || !secondaryConcept || mainConcept === secondaryConcept) {
+  if (!mainConcept) {
     return { relationshipType: "none" };
   }
 
   if (hasLevelUpSignal(title, text)) {
     return {
       relationshipType: "level-up",
-      secondaryConcept
+      secondaryConcept: secondaryConcept || undefined
     };
   }
 
   if (hasBridgeSignal(title, text)) {
     return {
       relationshipType: "bridge",
-      secondaryConcept
+      secondaryConcept: secondaryConcept || undefined
     };
+  }
+
+  if (!secondaryConcept || mainConcept === secondaryConcept) {
+    return { relationshipType: "none" };
   }
 
   if (role === "Comparison") {
@@ -138,13 +143,21 @@ function inferRelationship(segment, secondaryConcept, segmentsById) {
   return { relationshipType: "none" };
 }
 
-function detectMixedTopicSegment(segment) {
+function detectMixedTopicSegment(segment, concepts, mainConcept, role) {
   const title = cleanText(segment.title || "").toLowerCase();
   const text = cleanText(segment.text || "").toLowerCase();
 
   if (/^two topics\b/.test(title)) return true;
   if (/\btopic 1\b/.test(text) && /\btopic 2\b/.test(text)) return true;
-  if (/\bseed dispersal\b/.test(text) && /\bphotosynthesis\b/.test(text)) return true;
+
+  if (role === "Comparison") return false;
+
+  const strongMatches = concepts
+    .filter((concept) => cleanText(concept.name || "") !== mainConcept)
+    .map((concept) => scoreConceptAgainstSegment(segment, concept))
+    .filter((score) => score >= 0.48);
+
+  if (strongMatches.length >= 2) return true;
 
   return false;
 }
@@ -197,7 +210,17 @@ exports.handler = async function (event) {
         };
       }
 
-      if (detectMixedTopicSegment(segment)) {
+      const secondaryConcept = getBestSecondaryConcept(segment, concepts, mainConcept);
+      const relationship = inferRelationship(
+        segment,
+        secondaryConcept,
+        segmentsById
+      );
+
+      if (
+        relationship.relationshipType === "none" &&
+        detectMixedTopicSegment(segment, concepts, mainConcept, role)
+      ) {
         warnings.push(
           `Segment ${segment.segmentId} appears to contain multiple competing topics.`
         );
@@ -208,21 +231,6 @@ exports.handler = async function (event) {
           mixedTopic: true
         };
       }
-
-      const secondaryConcept = getBestSecondaryConcept(segment, concepts, mainConcept);
-
-      if (!secondaryConcept) {
-        return {
-          ...segment,
-          relationshipType: "none"
-        };
-      }
-
-      const relationship = inferRelationship(
-        segment,
-        secondaryConcept,
-        segmentsById
-      );
 
       if (relationship.relationshipType === "none") {
         return {

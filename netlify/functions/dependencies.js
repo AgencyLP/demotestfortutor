@@ -80,7 +80,11 @@ function inferDependencyForSegment(segments, index) {
     return uniqueSortedNumbers(deps);
   }
 
-  if (/^level up\b/.test(title) || /advanced|deeper|stage 1|stage 2|two linked stages|calvin cycle|light-dependent/.test(text)) {
+  if (
+    /^level up\b/.test(title) ||
+    /\b(advanced|deeper|further|extension|beyond the basics|next level|edge case|edge cases)\b/.test(text) ||
+    /\b(stage|step|phase|part)\s+\d+\b/.test(text)
+  ) {
     const deps = [];
 
     if (prevSameConcept) deps.push(prevSameConcept.segmentId);

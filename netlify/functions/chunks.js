@@ -15,6 +15,7 @@ function buildChunkTitle(mainConcept, chunkType, segments, secondaryConcept) {
   const firstTitle = cleanText(segments[0]?.title || "");
 
   if (chunkType === "bridge") {
+    if (!secondaryConcept && firstTitle) return firstTitle;
     return secondaryConcept
       ? `${mainConcept} ↔ ${secondaryConcept}`
       : `${mainConcept}: bridge`;

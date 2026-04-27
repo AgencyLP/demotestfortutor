@@ -84,7 +84,6 @@ function normalizeTitleToConcept(title) {
   value = value
     .replace(/^what(?:'s| is)\s+/i, "")
     .replace(/^what are\s+/i, "")
-    .replace(/^the\s+recipe[:\-]?\s*/i, "")
     .replace(/^bridge[:\-]?\s*/i, "")
     .replace(/^level\s+up[:\-]?\s*/i, "")
     .replace(/^two\s+topics[:\-]?\s*/i, "")
@@ -170,14 +169,35 @@ function dedupeConcepts(concepts) {
   return normalized;
 }
 
-function isTooNarrowConcept(name) {
+function isGenericFramingConcept(name) {
   const value = cleanText(name).toLowerCase();
   return (
-    value === "oxygen production" ||
-    value === "glucose formation" ||
-    value === "plant energy source" ||
-    value === "plant food production"
+    value === "bridge" ||
+    value === "connecting the pieces" ||
+    value === "two topics" ||
+    value === "level up" ||
+    value === "what goes in — what comes out" ||
+    value === "what goes in what comes out" ||
+    value === "inputs and outputs"
   );
+}
+
+function looksLikeNarrowDetailConcept(concept, segments) {
+  const name = cleanText(concept.name || concept);
+  const description = cleanText(concept.description || "");
+  const tokens = tokenize(name);
+
+  if (!tokens.length) return true;
+  if (tokens.length > 3) return false;
+
+  const supportCount = segments.filter((segment) => {
+    const segmentText = `${cleanText(segment.title || "")}\n${cleanText(segment.text || "")}`;
+    return overlapScore(segmentText, `${name}\n${description}`) >= 0.5;
+  }).length;
+
+  const detailNouns = /\b(input|inputs|output|outputs|source|sources|ingredient|ingredients|byproduct|byproducts|component|components|part|parts|step|steps)\b/i;
+
+  return supportCount <= 1 && detailNouns.test(name);
 }
 
 function fallbackConceptsFromSegments(segments, maxConcepts) {
@@ -193,7 +213,7 @@ function fallbackConceptsFromSegments(segments, maxConcepts) {
 
     if (!name || !description || seen.has(key)) continue;
     if (isMetaHeading(name)) continue;
-    if (isTooNarrowConcept(name)) continue;
+    if (isGenericFramingConcept(name)) continue;
 
     concepts.push({
       conceptId: concepts.length + 1,
@@ -317,7 +337,8 @@ function collapseOverlappingConcepts(concepts) {
 function normalizeAiResult(parsed, originalSegments) {
   const fallback = buildFallbackLessonMap(originalSegments);
   let rawConcepts = dedupeConcepts(parsed?.concepts || [])
-    .filter((item) => !isTooNarrowConcept(item.name));
+    .filter((item) => !isGenericFramingConcept(item.name))
+    .filter((item) => !looksLikeNarrowDetailConcept(item, originalSegments));
 
   rawConcepts = collapseOverlappingConcepts(rawConcepts);
 

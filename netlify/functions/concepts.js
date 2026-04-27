@@ -92,35 +92,36 @@ function chooseBestTitleSeed(segment) {
   return rawTitle || `Concept ${segment.segmentId}`;
 }
 
-function isTooNarrowConcept(name) {
-  const value = cleanText(name).toLowerCase();
-
-  return (
-    value === "oxygen production" ||
-    value === "glucose formation" ||
-    value === "plant energy source" ||
-    value === "plant food production" ||
-    value === "sugar production" ||
-    value === "food production" ||
-    value === "energy source" ||
-    value === "energy storage" ||
-    value === "what goes in — what comes out" ||
-    value === "what goes in what comes out" ||
-    value === "inputs and outputs" ||
-    value === "plant growth and development" ||
-    value === "plant nutrition"
-  );
-}
-
-function isBridgeOrMetaLikeConcept(name) {
+function isGenericFramingConcept(name) {
   const value = cleanText(name).toLowerCase();
 
   return (
     value === "bridge" ||
     value === "connecting the pieces" ||
     value === "two topics" ||
-    value === "level up"
+    value === "level up" ||
+    value === "what goes in — what comes out" ||
+    value === "what goes in what comes out" ||
+    value === "inputs and outputs"
   );
+}
+
+function looksLikeNarrowDetailConcept(concept, segments) {
+  const name = cleanText(concept.name || concept);
+  const description = cleanText(concept.description || "");
+  const tokens = tokenize(name);
+
+  if (!tokens.length) return true;
+  if (tokens.length > 3) return false;
+
+  const supportCount = segments.filter((segment) => {
+    const segmentText = `${cleanText(segment.title || "")}\n${cleanText(segment.text || "")}`;
+    return overlapScore(segmentText, `${name}\n${description}`) >= 0.5;
+  }).length;
+
+  const detailNouns = /\b(input|inputs|output|outputs|source|sources|ingredient|ingredients|byproduct|byproducts|component|components|part|parts|step|steps)\b/i;
+
+  return supportCount <= 1 && detailNouns.test(name);
 }
 
 function compactSegmentsForPrompt(segments) {
@@ -147,8 +148,7 @@ function fallbackConceptsFromSegments(segments, maxConcepts) {
 
     if (!name || !description || seen.has(key)) continue;
     if (isMetaHeading(name)) continue;
-    if (isTooNarrowConcept(name)) continue;
-    if (isBridgeOrMetaLikeConcept(name)) continue;
+    if (isGenericFramingConcept(name)) continue;
 
     concepts.push({
       conceptId: concepts.length + 1,
@@ -182,8 +182,7 @@ function dedupeConcepts(concepts) {
 
     if (!name || !description || seen.has(key)) continue;
     if (isMetaHeading(name)) continue;
-    if (isTooNarrowConcept(name)) continue;
-    if (isBridgeOrMetaLikeConcept(name)) continue;
+    if (isGenericFramingConcept(name)) continue;
 
     seen.add(key);
     normalized.push({ conceptId, name, description });
@@ -228,88 +227,12 @@ function collapseOverlappingConcepts(concepts) {
   }));
 }
 
-function normalizeConceptFamily(name) {
-  const value = cleanText(name).toLowerCase();
-
-  if (/photosynthesis/.test(value)) return "photosynthesis";
-  if (/chlorophyll|chloroplast/.test(value)) return "plant-structure";
-  if (/energy conversion|light energy|chemical energy/.test(value)) return "energy-conversion";
-  if (/stage|light-dependent|calvin cycle/.test(value)) return "photosynthesis-stages";
-
-  return value;
-}
-
-function pruneConceptFamilies(concepts) {
-  const kept = [];
-  const seenFamilies = new Set();
-
-  for (const concept of concepts) {
-    const family = normalizeConceptFamily(concept.name);
-
-    if (family === "photosynthesis") {
-      if (seenFamilies.has("photosynthesis")) continue;
-      seenFamilies.add("photosynthesis");
-      kept.push({
-        ...concept,
-        name: "Photosynthesis Process",
-        description:
-          "The process by which plants use sunlight, water, and carbon dioxide to make glucose and oxygen."
-      });
-      continue;
-    }
-
-    if (family === "energy-conversion") {
-      if (seenFamilies.has("energy-conversion")) continue;
-      seenFamilies.add("energy-conversion");
-      kept.push({
-        ...concept,
-        name: "Energy Conversion",
-        description:
-          "How light energy is captured and converted into usable chemical energy during photosynthesis."
-      });
-      continue;
-    }
-
-    if (family === "plant-structure") {
-      if (seenFamilies.has("plant-structure")) continue;
-      seenFamilies.add("plant-structure");
-      kept.push({
-        ...concept,
-        name: "Chloroplasts and Chlorophyll",
-        description:
-          "The plant structures and pigments that capture light and enable photosynthesis."
-      });
-      continue;
-    }
-
-    if (family === "photosynthesis-stages") {
-      if (seenFamilies.has("photosynthesis-stages")) continue;
-      seenFamilies.add("photosynthesis-stages");
-      kept.push({
-        ...concept,
-        name: "Stages of Photosynthesis",
-        description:
-          "The linked stages of photosynthesis, including the light-dependent reactions and the Calvin cycle."
-      });
-      continue;
-    }
-
-    kept.push(concept);
-  }
-
-  return kept.map((concept, index) => ({
-    conceptId: index + 1,
-    name: concept.name,
-    description: concept.description
-  }));
-}
-
 function normalizeConcepts(aiConcepts, segments, maxConcepts) {
   const fallback = fallbackConceptsFromSegments(segments, maxConcepts);
 
   let concepts = dedupeConcepts(aiConcepts || []);
   concepts = collapseOverlappingConcepts(concepts);
-  concepts = pruneConceptFamilies(concepts);
+  concepts = concepts.filter((concept) => !looksLikeNarrowDetailConcept(concept, segments));
 
   const seen = new Set(concepts.map((c) => cleanText(c.name).toLowerCase()));
 
@@ -328,7 +251,7 @@ function normalizeConcepts(aiConcepts, segments, maxConcepts) {
   }
 
   concepts = collapseOverlappingConcepts(concepts);
-  concepts = pruneConceptFamilies(concepts);
+  concepts = concepts.filter((concept) => !looksLikeNarrowDetailConcept(concept, segments));
 
   if (concepts.length > maxConcepts) {
     concepts = concepts.slice(0, maxConcepts).map((concept, index) => ({

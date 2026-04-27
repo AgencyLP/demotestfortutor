@@ -7,7 +7,9 @@
     "start": "netlify dev"
   },
   "dependencies": {
-    "pdf-parse": "^1.1.1"
+    "npm": "^11.13.0",
+    "pdf-parse": "^1.1.1",
+    "start": "^5.1.0"
   },
   "devDependencies": {
     "netlify-cli": "^24.9.0"
